@@ -7,7 +7,7 @@ from q_tools import Plot
 def new_position(position, action):
     return position[0] + action[0], position[1] + action[1]
 
-#
+
 class SimpleBoard:
     def __init__(self, n, m, cliff, player):
         self.n = n
