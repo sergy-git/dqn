@@ -4,7 +4,6 @@ from math import exp, log
 from q_tools import Plot
 
 
-# Test
 def new_position(position, action):
     return position[0] + action[0], position[1] + action[1]
 
