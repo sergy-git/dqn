@@ -1,20 +1,22 @@
+from random import choice
+
 def new_position(position, action):
     return position[0] + action[0], position[1] + action[1]
 
 
 class Actor:
-    def __init__(self):
-        self.x = 0
-        self.y = 0
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
         self.x_prev = None
         self.y_prev = None
         self.action = None
         self.test_action = None
         self.type = None
 
-    def reset(self):
-        self.x = 0
-        self.y = 0
+    def reset(self, x, y):
+        self.x = x
+        self.y = y
         self.x_prev = None
         self.y_prev = None
         self.action = None
@@ -38,5 +40,59 @@ class Actor:
         return (self.x_prev, self.y_prev), self.action, (self.x, self.y)
 
 
+class SimpleBoard:
+    def __init__(self, n, m, actors):
+        self.n = n
+        self.m = m
+        self.actors = actors
+        self.draw()
+
+    def draw(self):
+        rows = [['[ ]'] * self.n for _ in range(self.m)]
+        for actor in self.actors:
+            x, y = actor.get_pos()
+            if actor.type is 'enemy':
+                rows[y][x] = '[x]'
+            else:
+                rows[y][x] = '[@]'
+
+        print('\n' * 5)  # Clear screen
+        for row in rows:
+            for cell in row:
+                print(cell, end='')
+            print()
+        print('___' * self.n)
+
+
+class Player(Actor):
+    def __init__(self, x=0, y=0):
+        super().__init__(x, y)
+        self.type = 'player'
+
+
+class Enemy(Actor):
+    def __init__(self, x=0, y=0):
+        super().__init__(x, y)
+        self.type = 'enemy'
+
+
+class World:
+    def __init__(self, model_strategy, n=7, m=7):
+        self.model_strategy = model_strategy
+        self.n = n
+        self.m = m
+        self.actions = ((0, 1), (1, 0), (0, -1), (-1, 0))
+        self.actors = [Player(1, 1), Enemy(3, 1), Enemy(1, 3), Enemy(3, 3)]
+        self.board = SimpleBoard(5, 5, self.actors)
+        self.step_count = 0
+        self.game_over = None
+
+    def game_over(self, player, enemys):
+        x, y = player.get_pos()
+        for enemy in enemys:
+            if enemy
+
+
 if __name__ == '__main__':
-    pass
+    world = World(choice)
+
