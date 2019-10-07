@@ -1,6 +1,6 @@
 from q_tools import Plot
 from random import choice, random
-from time import sleep
+from time import sleep, time
 from math import exp, log
 from typing import List
 
@@ -101,7 +101,7 @@ class World:
         self.actors = [self.player] + self.enemies
         self.board = SimpleBoard(self.n, self.m, self.actors)
         self._step_count = 0
-        self._reward = 0
+        self.reward = 0
 
     def reset(self):
         self._step_count = 0
@@ -114,9 +114,9 @@ class World:
     def game_over(self):
         game_over = any(map(lambda enemy: enemy.get_pos() == self.player.get_pos(), self.enemies))
         if game_over:
-            self._reward = -100
+            self.reward = -100
         else:
-            self._reward = 1
+            self.reward = 1
         return game_over
 
     def valid_pos(self, position):
@@ -166,9 +166,6 @@ class World:
     def transition(self):
         return self.prev_state(), self.player.action, self.full_state()
 
-    def reward(self):
-        return self._reward
-
 
 class Epsilon:
     def __init__(self, max_epochs):
@@ -180,90 +177,96 @@ class Epsilon:
         return self.epsilon if self.epsilon > 1e-5 else 0
 
 
-class Q:
-    def __init__(self, alpha=0.5, default_value=0):
+class Policy:
+    def __init__(self, alpha=0.5, gamma=0.9, epsilon=0, default_value=0):
+        self.alpha = alpha
+        self.gamma = gamma
+        self.epsilon = epsilon
+        self.default = default_value
+        self.q = {}
+        self.best_action = {}
         self.actions = None
         self.valid_pos = None
-        self.alpha = alpha
-        self.default = default_value
-        self.dictionary = {}
 
     def __len__(self):
-        return len(self.dictionary)
+        return len(self.q)
 
     def set_world_rules(self, actions, valid_pos):
         self.actions = actions
         self.valid_pos = valid_pos
 
-    def validate(self, full_sate):
-        state, position = full_sate
-        if state not in self.dictionary.keys():
-            self.dictionary.update({state: {}})
+    def validate(self, state, position):
+        if state not in self.q.keys():
+            self.q.update({state: {}})
+            self.best_action.update({state: {'action': (0, 0), 'value': 0}})
             for action in self.actions:
                 if self.valid_pos(next_position(position, action)):
-                    self.dictionary[state].update({action: self.default})
+                    self.q[state].update({action: self.default})
 
     def invalid_state(self, state):
-        return state not in self.dictionary.keys()
+        return state not in self.q.keys()
 
     def get(self, state, action):
-        return self.dictionary[state][action]
+        return self.q[state][action]
 
-    def update(self, state, action, update):
-        self.dictionary[state][action] += self.alpha * update
-
-    def best_action(self, state):
-        return max(self.dictionary[state], key=self.dictionary[state].get)
-
-    def max_reward(self, state):
-        return self.dictionary[state][self.best_action(state)]
-
-
-class Policy:
-    def __init__(self, alpha=0.5, gamma=0.9, epsilon=0):
-        self.gamma = gamma
-        self.q = Q(alpha)
-        self.epsilon = epsilon
-
-    def set_world_rules(self, actions, valid_pos):
-        self.q.set_world_rules(actions, valid_pos)
-
-    def state0(self, full_state):
-        self.q.validate(full_state)
+    def state0(self, state, position):
+        self.validate(state, position)
 
     def optimize(self, transition, reward):
         prev_state, action, full_state = transition
-        state, _ = full_state
+        state, position = full_state
 
-        self.q.validate(full_state)
+        self.validate(state, position)
 
-        target = reward + self.gamma * self.q.max_reward(state)
-        error = target - self.q.get(prev_state, action)
-        self.q.update(prev_state, action, error)
+        target = reward + self.gamma * self.best_action[state]['value']
+        error = target - self.q[prev_state][action]
+        self.q[prev_state][action] += self.alpha * error
+
+        if self.q[prev_state][action] > self.best_action[prev_state]['value']:
+            self.best_action[prev_state]['value'] = self.q[prev_state][action]
+            self.best_action[prev_state]['action'] = action
 
     def strategy(self, state, random_action):
-        return random_action() if self.epsilon > random() or self.q.invalid_state(state) else self.q.best_action(state)
+        return random_action() if self.epsilon > random() or self.invalid_state(state) \
+            else self.best_action[state]['action']
 
 
 if __name__ == '__main__':
-    MAX_EPOCHS = 1000000
+    MAX_EPOCHS = 500000
     PRINT_NUM = round(MAX_EPOCHS/1000)
     ALPHA = 0.5
     GAMMA = 0.9
 
-    plot = Plot(rolling={'method': 'mean', 'N': 1000})
+    plot = Plot(MAX_EPOCHS, rolling={'method': 'mean', 'N': PRINT_NUM})
     eps = Epsilon(MAX_EPOCHS)
     policy = Policy(ALPHA, GAMMA, eps.epsilon)
 
     world = World(policy.strategy)
     policy.set_world_rules(world.actions, world.valid_pos)
-    policy.state0(world.full_state())
+    policy.state0(world.state(), world.player.get_pos())
+    ts = time()
+    dt = 0
+    cs = 0
     for epoch in range(MAX_EPOCHS):
-        while world.play(silent=True):
-            policy.optimize(world.transition(), world.reward())
-        plot.update(world.step_count(), silent=True)
+        play = True
+        while play:
+            t1 = time()
+            play = world.play(silent=True)
+            dt += time() - t1
+
+            transition = world.transition()
+            policy.optimize(transition, world.reward)
+        cs += world.step_count()
+        plot.update(epoch, world.step_count(), silent=True)
         if (epoch + 1) % PRINT_NUM == 0:
-            print('Epoch %5d;' % (epoch + 1), 'Step count: %4d;' % plot.roll[-1], 'Reward: %d;' % world.reward())
+            elapsed = time() - ts
+            eta = elapsed * (MAX_EPOCHS / (epoch + 1) - 1)
+            print('Epoch %5d;' % (epoch + 1), 'Step count: %4d;' % plot.roll[epoch], 'Reward: %d;' % world.reward,
+                  'eta (s): %f6.2; ' % eta, 'dt (ms) = %5.3f; ' % (1000 * dt / cs),
+                  'len(Q) =', len(policy.q))
+            cs = 0
+            dt = 0
         policy.epsilon = eps.step()
         world.reset()
+
     plot.plot()

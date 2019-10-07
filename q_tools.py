@@ -1,25 +1,30 @@
 from matplotlib import pyplot
-from statistics import mean
 
 
 class Plot:
-    def __init__(self, rolling=None):
-        self.line = []
+    def __init__(self, max_len, rolling=None):
+        self.line = {n: 0 for n in range(max_len)}
         if rolling is not None:
             self.method = rolling['method']
             self.N = rolling['N']
-            self.roll = []
+            self.roll = {n: 0 for n in range(max_len)}
+            self.sum = 0
         else:
             self.method = None
             self.roll = None
 
-    def roll_append(self):
+    def roll_append(self, idx):
         if self.method is 'mean':
-            self.roll.append(None if len(self.line) < self.N else mean(self.line[-self.N:]))
+            self.sum += self.line[idx]
+            if idx + 1 >= self.N:
+                self.roll[idx] = self.sum / self.N
+                self.sum -= self.line[idx + 1 - self.N]
+            else:
+                self.roll[idx] = None
 
-    def update(self, value, silent=False):
-        self.line.append(value)
-        self.roll_append()
+    def update(self, idx, value, silent=False):
+        self.line[idx] = value
+        self.roll_append(idx)
         if not silent:
             self.plot()
 
