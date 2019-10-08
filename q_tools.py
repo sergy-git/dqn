@@ -3,11 +3,11 @@ from matplotlib import pyplot
 
 class Plot:
     def __init__(self, max_len, rolling=None):
-        self.line = {n: 0 for n in range(max_len)}
+        self.line = {n: None for n in range(max_len)}
         if rolling is not None:
             self.method = rolling['method']
             self.N = rolling['N']
-            self.roll = {n: 0 for n in range(max_len)}
+            self.roll = {n: None for n in range(max_len)}
             self.sum = 0
         else:
             self.method = None
@@ -19,14 +19,10 @@ class Plot:
             if idx + 1 >= self.N:
                 self.roll[idx] = self.sum / self.N
                 self.sum -= self.line[idx + 1 - self.N]
-            else:
-                self.roll[idx] = None
 
-    def update(self, idx, value, silent=False):
+    def update(self, idx, value):
         self.line[idx] = value
         self.roll_append(idx)
-        if not silent:
-            self.plot()
 
     def plot(self):
         pyplot.figure(0)
@@ -34,7 +30,7 @@ class Plot:
         pyplot.title('Training...')
         pyplot.xlabel('Epoch')
         pyplot.ylabel('Duration')
-        pyplot.plot(self.line)
+        pyplot.plot(list(self.line.values()))
         if self.roll is not None:
-            pyplot.plot(self.roll)
+            pyplot.plot(list(self.roll.values()))
         pyplot.pause(0.00001)  # pause a bit so that plots are updated

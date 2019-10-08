@@ -17,7 +17,7 @@ class SimpleBoard:
         self.draw()
 
     def draw(self):
-        x, y = self.player.get_pos()
+        x, y = self.player.curr_pos()
         rows = [['[ ]'] * self.n for _ in range(self.m)]
         rows[0][0] = '[#]'
         rows[0][-1] = '[$]'
