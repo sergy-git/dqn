@@ -87,7 +87,6 @@ class World:
 
     def __init__(self, policy_strategy, n=5, m=5):
         self.actions = ((0, 0), (0, 1), (1, 0), (0, -1), (-1, 0))
-        self.empty_state = list(0 for _ in range(n * m))
         self.policy = policy_strategy
         self.n = n
         self.m = m
@@ -157,15 +156,12 @@ class World:
             self.draw()
         return not self.game_over()
 
-    def state1(self):
-        state = self.empty_state.copy()
+    def state(self):
+        state = list(0 for _ in range(self.n * self.m))
         for actor in self.actors:
-            x, y = self.player.curr_pos()
+            x, y = actor.curr_pos()
             state[x + y * self.m] = -1 if actor.type is 'enemy' else 1
         return tuple(state)
-
-    def state(self):
-        return self.player.curr_pos(), self.enemies[0].curr_pos()
 
 
 class Policy:
@@ -220,8 +216,8 @@ class Policy:
 
 class Epsilon:
     def __init__(self, max_epochs):
-        self._random = round(0.10 * max_epochs)
-        self._greedy = round(0.00 * max_epochs)
+        self._random = round(0.100 * max_epochs)
+        self._greedy = round(0.0002 * max_epochs)
         self._max_epochs = max_epochs - self._random - self._greedy
         self._count = 0
         self.epsilon = 1
