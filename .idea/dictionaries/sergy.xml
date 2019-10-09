@@ -2,6 +2,9 @@
   <dictionary name="sergy">
     <words>
       <w>optim</w>
+      <w>tictoc</w>
+      <w>xlabel</w>
+      <w>ylabel</w>
     </words>
   </dictionary>
 </component>

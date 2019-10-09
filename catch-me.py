@@ -1,7 +1,6 @@
-from q_tools import Plot
+from q_tools import Plot, TicToc
 from random import choice, random
 from time import sleep, time
-from math import exp, log
 from typing import List
 
 
@@ -121,6 +120,7 @@ class World:
         self._step_count = 0
         for actor in self.actors:
             actor.reset()
+        self._curr_state = self.state()
 
     def draw(self):
         sleep(1)
@@ -157,22 +157,15 @@ class World:
             self.draw()
         return not self.game_over()
 
-    def state(self):
+    def state1(self):
         state = self.empty_state.copy()
         for actor in self.actors:
-            x, y = actor.curr_pos()
+            x, y = self.player.curr_pos()
             state[x + y * self.m] = -1 if actor.type is 'enemy' else 1
         return tuple(state)
 
-
-class Epsilon:
-    def __init__(self, max_epochs):
-        self.eps_start = exp(log(1e-6)/max_epochs)
-        self.epsilon = 1
-
-    def step(self):
-        self.epsilon *= self.eps_start
-        return self.epsilon if self.epsilon > 1e-5 else 0
+    def state(self):
+        return self.player.curr_pos(), self.enemies[0].curr_pos()
 
 
 class Policy:
@@ -205,9 +198,6 @@ class Policy:
                 if self.valid_pos(self.next_pos(action)):
                     self.q[state].update({action: self.default})
 
-    def invalid_state(self, state):
-        return state not in self.best_action.keys()
-
     def get(self, state, action):
         return self.q[state][action]
 
@@ -225,45 +215,59 @@ class Policy:
             self.best_action[prev_state]['value'] = self.q[prev_state][last_action]
 
     def strategy(self, state, random_action):
-        return random_action() if self.epsilon > random() or self.invalid_state(state) \
-            else self.best_action[state]['action']
+        return random_action() if self.epsilon > random() else self.best_action[state]['action']
+
+
+class Epsilon:
+    def __init__(self, max_epochs):
+        self._random = round(0.10 * max_epochs)
+        self._greedy = round(0.00 * max_epochs)
+        self._max_epochs = max_epochs - self._random - self._greedy
+        self._count = 0
+        self.epsilon = 1
+
+    def step(self):
+        if self._random <= self._count < self._max_epochs + self._random:
+            self.epsilon = 1 - (self._count - self._random) ** 2 / self._max_epochs ** 2
+        elif self._count > self._max_epochs + self._random:
+            self.epsilon = 0
+        self._count += 1
+        return self.epsilon
 
 
 if __name__ == '__main__':
-    MAX_EPOCHS = 100000
-    PRINT_NUM = MAX_EPOCHS // 100
+    MAX_EPOCHS = 5000
+    PRINT_NUM = MAX_EPOCHS // 50
     ALPHA = 0.5
     GAMMA = 0.95
 
-    plot = Plot(MAX_EPOCHS, rolling={'method': 'mean', 'N': PRINT_NUM})
+    plot = Plot(MAX_EPOCHS, rolling={'method': 'mean', 'N': PRINT_NUM}, figure_num=0)
+    plot_epsilon = Plot(MAX_EPOCHS, title='Epsilon vs Epoch', ylabel='Epsilon', figure_num=1)
+
     eps = Epsilon(MAX_EPOCHS)
     policy = Policy(ALPHA, GAMMA, eps.epsilon)
     world = World(policy.strategy)
     policy.set_world_properties(world.actions, world.valid_pos)
     policy.set_actor_properties(world.player.next_pos)
+    policy.validate(world.curr_state())  # Init state 0 in dictionary
 
-    ts = time()
-    dt = 0
-    cs = 0
+    tictoc = TicToc(MAX_EPOCHS)
     for epoch in range(MAX_EPOCHS):
-        t1 = time()
-        policy.validate(world.curr_state())     # Init state 0 in dictionary
         while world.play(silent=True):
             policy.optimize(world.prev_state(), world.last_action(), world.curr_state(), world.reward())
+        policy.optimize(world.prev_state(), world.last_action(), world.curr_state(), world.reward())
         plot.update(epoch, world.step_count())
+        plot_epsilon.update(epoch, policy.epsilon)
         if (epoch + 1) % PRINT_NUM == 0:
-            elapsed = time() - ts
-            eta = elapsed * (MAX_EPOCHS / (epoch + 1) - 1)
-            print('Epoch %5d;' % (epoch + 1), 'Step count: %4d;' % plot.roll[epoch], 'Reward: %d;' % world.reward(),
-                  'eta (s): %f6.2; ' % eta, 'dt (ms) = %5.3f; ' % (1000 * dt / cs),
-                  'len(Q) =', len(policy.q))
-            cs = 0
-            dt = 0
+            tictoc.toc()
+            print('Epoch %7d;' % (epoch + 1), 'Step count: %5d;' % plot.roll[epoch], 'len(Q) =', len(policy.q),
+                  'eta (s): %6.2f; ' % tictoc.eta(epoch))
+
         policy.epsilon = eps.step()
         world.reset()
-        dt += time() - t1
-        cs += 1
 
-    print('Max duration:', max(list(plot.roll.values())[-len(plot.roll) // 2:]))
+    tictoc.toc()
+    print('Max duration: %d;' % max(list(plot.roll.values())[-len(plot.roll) // 2:]),
+          'Elapsed %.2f (s)' % tictoc.elapsed())
     plot.plot()
-
+    plot_epsilon.plot()
