@@ -1,6 +1,6 @@
-from q_tools import Plot, TicToc
+from q_tools import *
 from random import choice, random
-from time import sleep, time
+from time import sleep
 from typing import List
 
 
@@ -87,11 +87,15 @@ class World:
 
     def __init__(self, policy_strategy, n=5, m=5):
         self.actions = ((0, 0), (0, 1), (1, 0), (0, -1), (-1, 0))
+        self._wall = {(-1,  0): [1, 0, 0, 1, 0, 0, 1, 0, 0],
+                      (1,  0): [0, 0, 1, 0, 0, 1, 0, 0, 1],
+                      (0, -1): [1, 1, 1, 0, 0, 0, 0, 0, 0],
+                      (0,  1): [0, 0, 0, 0, 0, 0, 1, 1, 1]}
         self.policy = policy_strategy
         self.n = n
         self.m = m
-        self.player = Player(1, 1)
-        self.enemies = [Enemy(3, 3)]
+        self.player = Player(0, 0)
+        self.enemies = [Enemy(0, 2), Enemy(2, 2)]
         self.actors = [self.player] + self.enemies
         self.board = SimpleBoard(self.n, self.m, self.actors)
         self._step_count = 0
@@ -156,11 +160,28 @@ class World:
             self.draw()
         return not self.game_over()
 
-    def state(self):
+    def state_image(self):
         state = list(0 for _ in range(self.n * self.m))
         for actor in self.actors:
             x, y = actor.curr_pos()
             state[x + y * self.m] = -1 if actor.type is 'enemy' else 1
+        return tuple(state)
+
+    def state(self):
+        # the state is only near by 8 cell when player is in center
+        px, py = self.player.curr_pos()
+        state = list(0 for _ in range(9))
+        # draw walls
+        for action in self.actions:
+            if not self.valid_pos(self.player.next_pos(action)):
+                state = list(map(lambda a, b: a + b, state, self._wall[action]))
+        # mark enemies
+        for enemy in self.enemies:
+            x, y = enemy.curr_pos()
+            ix = x - px + 1
+            iy = y - py + 1
+            if 0 <= ix < 3 and 0 <= iy < 3:
+                state[ix + iy * 3] = -1
         return tuple(state)
 
 
@@ -216,8 +237,8 @@ class Policy:
 
 class Epsilon:
     def __init__(self, max_epochs):
-        self._random = round(0.100 * max_epochs)
-        self._greedy = round(0.0002 * max_epochs)
+        self._random = round(0.1 * max_epochs)
+        self._greedy = round(0.1 * max_epochs)
         self._max_epochs = max_epochs - self._random - self._greedy
         self._count = 0
         self.epsilon = 1
@@ -232,7 +253,7 @@ class Epsilon:
 
 
 if __name__ == '__main__':
-    MAX_EPOCHS = 5000
+    MAX_EPOCHS = 100000
     PRINT_NUM = MAX_EPOCHS // 50
     ALPHA = 0.5
     GAMMA = 0.95
@@ -258,9 +279,9 @@ if __name__ == '__main__':
             tictoc.toc()
             print('Epoch %7d;' % (epoch + 1), 'Step count: %5d;' % plot.roll[epoch], 'len(Q) =', len(policy.q),
                   'eta (s): %6.2f; ' % tictoc.eta(epoch))
-
-        policy.epsilon = eps.step()
-        world.reset()
+        if not epoch + 1 == MAX_EPOCHS:
+            policy.epsilon = eps.step()
+            world.reset()
 
     tictoc.toc()
     print('Max duration: %d;' % max(list(plot.roll.values())[-len(plot.roll) // 2:]),

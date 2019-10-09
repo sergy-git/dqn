@@ -74,3 +74,16 @@ class TicToc:
             self._eta.append(self._dt[-1] * (self._max_counts - self._counts[-1]))
 
         return self._eta[-1]
+
+
+def to_matrix(vector, lines_number):
+    if len(vector) % lines_number == 0:
+        return [vector[i:i + lines_number] for i in range(0, len(vector), lines_number)]
+    else:
+        return None
+
+
+def draw_state(state, lines_number):
+    rows = to_matrix(state, lines_number)
+    for row in rows:
+        print(row)
