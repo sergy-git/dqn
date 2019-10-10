@@ -87,10 +87,6 @@ class World:
 
     def __init__(self, policy_strategy, n=5, m=5):
         self.actions = ((0, 0), (0, 1), (1, 0), (0, -1), (-1, 0))
-        self._wall = {(-1,  0): [1, 0, 0, 1, 0, 0, 1, 0, 0],
-                      (1,  0): [0, 0, 1, 0, 0, 1, 0, 0, 1],
-                      (0, -1): [1, 1, 1, 0, 0, 0, 0, 0, 0],
-                      (0,  1): [0, 0, 0, 0, 0, 0, 1, 1, 1]}
         self.policy = policy_strategy
         self.n = n
         self.m = m
@@ -160,29 +156,15 @@ class World:
             self.draw()
         return not self.game_over()
 
-    def state_image(self):
-        state = list(0 for _ in range(self.n * self.m))
+    def state(self):
+        state = [[10] * self.n for _ in range(self.m)]
         for actor in self.actors:
             x, y = actor.curr_pos()
-            state[x + y * self.m] = -1 if actor.type is 'enemy' else 1
-        return tuple(state)
-
-    def state(self):
-        # the state is only near by 8 cell when player is in center
-        px, py = self.player.curr_pos()
-        state = list(0 for _ in range(9))
-        # draw walls
-        for action in self.actions:
-            if not self.valid_pos(self.player.next_pos(action)):
-                state = list(map(lambda a, b: a + b, state, self._wall[action]))
-        # mark enemies
-        for enemy in self.enemies:
-            x, y = enemy.curr_pos()
-            ix = x - px + 1
-            iy = y - py + 1
-            if 0 <= ix < 3 and 0 <= iy < 3:
-                state[ix + iy * 3] = -1
-        return tuple(state)
+            state[x][y] = 127 if actor.type is 'enemy' else 255
+        t_state = []
+        for row in state:
+            t_state.append(tuple(row))
+        return tuple(t_state)
 
 
 class Policy:
@@ -277,7 +259,7 @@ if __name__ == '__main__':
         plot_epsilon.update(epoch, policy.epsilon)
         if (epoch + 1) % PRINT_NUM == 0:
             tictoc.toc()
-            print('Epoch %7d;' % (epoch + 1), 'Step count: %5d;' % plot.roll[epoch], 'len(Q) =', len(policy.q),
+            print('Epoch %7d;' % (epoch + 1), 'Step count: %5d;' % plot.roll[epoch],
                   'eta (s): %6.2f; ' % tictoc.eta(epoch))
         if not epoch + 1 == MAX_EPOCHS:
             policy.epsilon = eps.step()
