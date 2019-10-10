@@ -169,10 +169,7 @@ class World:
         for actor in self.actors:
             x, y = actor.curr_pos()
             state[x][y] = 127 if actor.type is 'enemy' else 255
-        t_state = []
-        for row in state:
-            t_state.append(tuple(row))
-        return tuple(t_state), self.player.curr_pos()
+        return torch.tensor(state, dtype=torch.float).unsqueeze(0)
 
 
 class Policy:
@@ -244,30 +241,19 @@ class Epsilon:
 
 
 class DQN(nn.Module):
-    def __init__(self, h, w, outputs):
+    def __init__(self, h=5, w=5, outputs=5):
         super(DQN, self).__init__()
-        self.conv1 = nn.Conv2d(3, 16, kernel_size=5, stride=2)
+        self.conv1 = nn.Conv2d(1, 16, kernel_size=3)
         self.bn1 = nn.BatchNorm2d(16)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=5, stride=2)
-        self.bn2 = nn.BatchNorm2d(32)
-        self.conv3 = nn.Conv2d(32, 32, kernel_size=5, stride=2)
-        self.bn3 = nn.BatchNorm2d(32)
-
-        # Number of Linear input connections depends on output of conv2d layers
-        # and therefore the input image size, so compute it.
-        def conv2d_size_out(size, kernel_size = 5, stride = 2):
-            return (size - (kernel_size - 1) - 1) // stride  + 1
-        conv_w = conv2d_size_out(conv2d_size_out(conv2d_size_out(w)))
-        conv_h = conv2d_size_out(conv2d_size_out(conv2d_size_out(h)))
-        linear_input_size = conv_w * conv_h * 32
-        self.head = nn.Linear(linear_input_size, outputs)
+        self.conv2 = nn.Conv2d(16, 16, kernel_size=3)
+        self.bn2 = nn.BatchNorm2d(16)
+        self.head = nn.Linear(16, outputs)
 
     # Called with either one element to determine next action, or a batch
     # during optimization. Returns tensor([[left0exp,right0exp]...]).
     def forward(self, x):
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
-        x = F.relu(self.bn3(self.conv3(x)))
         return self.head(x.view(x.size(0), -1))
 
 
@@ -293,8 +279,8 @@ if __name__ == '__main__':
     PRINT_NUM = MAX_EPOCHS // 500
     ALPHA = 0.5
     GAMMA = 0.95
-    MEMORY_SIZE = 512
-    BATCH_SIZE = 64
+    MEMORY_SIZE = 2048
+    BATCH_SIZE = 256
 
     plot = Plot(MAX_EPOCHS, rolling={'method': 'mean', 'N': PRINT_NUM}, figure_num=0)
     plot_epsilon = Plot(MAX_EPOCHS, title='Epsilon vs Epoch', ylabel='Epsilon', figure_num=1)
@@ -303,9 +289,6 @@ if __name__ == '__main__':
     eps = Epsilon(MAX_EPOCHS)
     policy = Policy(ALPHA, GAMMA, eps.epsilon)
     world = World(policy.strategy)
-    policy.set_world_properties(world.actions, world.valid_pos)
-    policy.set_actor_properties(world.player.next_pos)
-    policy.validate(world.curr_state())  # Init state 0 in dictionary
 
     # Fill replay memory
     for i in range(MEMORY_SIZE):
@@ -314,29 +297,11 @@ if __name__ == '__main__':
         else:
             memory.push(world.prev_state(), world.last_action(), world.curr_state(), world.reward())
             world.reset()
-    world.reset()
 
-    tictoc = TicToc(MAX_EPOCHS)
-    for epoch in range(MAX_EPOCHS):
-        while world.play(silent=True):
-            memory.push(world.prev_state(), world.last_action(), world.curr_state(), world.reward())
-            for transition in memory.get_random(BATCH_SIZE):
-                policy.optimize(transition)
-        memory.push(world.prev_state(), world.last_action(), world.curr_state(), world.reward())
-        for transition in memory.get_random(BATCH_SIZE):
-            policy.optimize(transition)
-        plot.update(epoch, world.step_count())
-        plot_epsilon.update(epoch, policy.epsilon)
-        if (epoch + 1) % PRINT_NUM == 0:
-            tictoc.toc()
-            print('Epoch %7d;' % (epoch + 1), 'Step count: %5d;' % plot.roll[epoch],
-                  'eta (s): %6.2f; ' % tictoc.eta(epoch))
-        if not epoch + 1 == MAX_EPOCHS:
-            policy.epsilon = eps.step()
-            world.reset()
+    dqn = DQN()
 
-    tictoc.toc()
-    print('Max duration: %d;' % max(list(plot.roll.values())[-len(plot.roll) // 2:]),
-          'Elapsed %.2f (s)' % tictoc.elapsed())
-    plot.plot()
-    plot_epsilon.plot()
+    transitions = memory.get_random(10)
+    batch = Transition(*zip(*transitions))
+    state_batch = torch.stack(batch.curr_state)
+
+    output = dqn(state_batch).max(1)[0].detach()

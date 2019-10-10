@@ -87,3 +87,9 @@ def draw_state(state, lines_number):
     rows = to_matrix(state, lines_number)
     for row in rows:
         print(row)
+
+
+def conv2d_size_out(size, kernel_size=3, stride=1):
+    return (size - (kernel_size - 1) - 1) // stride + 1
+# conv_w = conv2d_size_out(conv2d_size_out(conv2d_size_out(w)))
+# conv_h = conv2d_size_out(conv2d_size_out(conv2d_size_out(h)))
