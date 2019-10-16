@@ -2,10 +2,11 @@ from q_tools import *
 from random import choice, random, sample
 from time import sleep
 from typing import List
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
+from torch import tensor, float, stack
+from torch.nn import Module, Conv2d, BatchNorm2d, Linear
+from torch.optim import RMSprop as Optimizer
+from torch.nn import SmoothL1Loss as Loss
+from torch.nn.functional import relu
 from collections import namedtuple
 
 
@@ -40,17 +41,15 @@ class Actor:
         return self.x + action[0], self.y + action[1]
 
     def move(self, policy_strategy, valid_pos):
-        valid = False
-        while not valid:
-            action = policy_strategy()
-            x_new, y_new = self.next_pos(action)
-            valid = valid_pos((x_new, y_new))
-            if valid:
-                self.action = action
-                self.x_prev = self.x
-                self.y_prev = self.y
-                self.x = x_new
-                self.y = y_new
+        action = policy_strategy()
+        if not valid_pos(self.next_pos(action)):
+            action = (0, 0)
+        x_new, y_new = self.next_pos(action)
+        self.action = action
+        self.x_prev = self.x
+        self.y_prev = self.y
+        self.x = x_new
+        self.y = y_new
 
 
 class Player(Actor):
@@ -95,6 +94,7 @@ class World:
 
     def __init__(self, policy_strategy, n=5, m=5):
         self.actions = ((0, 0), (0, 1), (1, 0), (0, -1), (-1, 0))
+        self.keys = {self.actions[index]: index for index in range(len(self.actions))}
         self.policy = policy_strategy
         self.n = n
         self.m = m
@@ -112,16 +112,19 @@ class World:
         return self._step_count
 
     def reward(self):
-        return self._reward
+        return tensor(self._reward, dtype=float)
 
     def prev_state(self):
         return self._prev_state
 
     def last_action(self):
-        return self._last_action
+        return tensor(self.keys[self._last_action])
 
     def curr_state(self):
         return self._curr_state
+
+    def transition(self):
+        return Transition(self.prev_state(), self.last_action(), self.curr_state(), self.reward())
 
     def reset(self):
         self._step_count = 0
@@ -143,14 +146,14 @@ class World:
         if game_over:
             self._reward = -1
         else:
-            self._reward = 1
+            self._reward = 1 if not self._last_action == (0, 0) else .9
         return game_over
 
     def random_action(self):
         return choice(self.actions)
 
     def strategy(self):
-        return self.policy(self.state(), self.random_action)
+        return self.actions[self.policy(self.state())]
 
     def play(self, silent=False):
         self.player.move(self.strategy, self.valid_pos)
@@ -169,67 +172,13 @@ class World:
         for actor in self.actors:
             x, y = actor.curr_pos()
             state[x][y] = 127 if actor.type is 'enemy' else 255
-        t_state = []
-        for row in state:
-            t_state.append(tuple(row))
-        return tuple(t_state), self.player.curr_pos()
-
-
-class Policy:
-    def __init__(self, alpha=0.5, gamma=0.9, epsilon=0, default_value=0):
-        self.alpha = alpha
-        self.gamma = gamma
-        self.epsilon = epsilon
-        self.default = default_value
-        self.q = {}
-        self.best_action = {}
-        self.actions = None
-        self.valid_pos = None
-        self.next_pos = None
-
-    def __len__(self):
-        return len(self.q)
-
-    def set_world_properties(self, actions, valid_pos):
-        self.actions = actions
-        self.valid_pos = valid_pos
-
-    def set_actor_properties(self, next_pos):
-        self.next_pos = next_pos
-
-    def validate(self, state):
-        if state not in self.q.keys():
-            _, position = state
-            self.q.update({state: {}})
-            self.best_action.update({state: {'action': (0, 0), 'value': 0}})
-            for action in self.actions:
-                if self.valid_pos((position[0] + action[0], position[1] + action[1])):
-                    self.q[state].update({action: self.default})
-
-    def get(self, state, action):
-        return self.q[state][action]
-
-    def optimize(self, transition_in):
-        prev_state, last_action, curr_state, reward = transition_in
-        self.validate(prev_state)
-        self.validate(curr_state)
-        target = reward + self.gamma * self.best_action[curr_state]['value']
-        error = target - self.q[prev_state][last_action]
-        self.q[prev_state][last_action] += self.alpha * error
-
-        if self.q[prev_state][last_action] > self.best_action[prev_state]['value']:
-            self.best_action[prev_state]['action'] = last_action
-            self.best_action[prev_state]['value'] = self.q[prev_state][last_action]
-
-    def strategy(self, state, random_action):
-        return random_action() if self.epsilon > random() or state not in self.q.keys() \
-            else self.best_action[state]['action']
+        return tensor(state, dtype=float).unsqueeze(0)
 
 
 class Epsilon:
     def __init__(self, max_epochs):
-        self._random = round(0.1 * max_epochs)
-        self._greedy = round(0.1 * max_epochs)
+        self._random = round(0.10 * max_epochs)
+        self._greedy = round(0.01 * max_epochs)
         self._max_epochs = max_epochs - self._random - self._greedy
         self._count = 0
         self.epsilon = 1
@@ -243,88 +192,115 @@ class Epsilon:
         return self.epsilon
 
 
-class DQN(nn.Module):
-    def __init__(self, h, w, outputs):
-        super(DQN, self).__init__()
-        self.conv1 = nn.Conv2d(3, 16, kernel_size=5, stride=2)
-        self.bn1 = nn.BatchNorm2d(16)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=5, stride=2)
-        self.bn2 = nn.BatchNorm2d(32)
-        self.conv3 = nn.Conv2d(32, 32, kernel_size=5, stride=2)
-        self.bn3 = nn.BatchNorm2d(32)
+class Policy:
+    def __init__(self, memory_size, batch_size, gamma=0.9, epsilon=0):
+        self.memory = ReplayMemory(memory_size, batch_size)
+        self.gamma = gamma
+        self.epsilon = epsilon
+        self.n_actions = None
+        self.actions = None
+        self.policy_net = None
+        self.optimizer = None
+        self.loss = Loss()
 
-        # Number of Linear input connections depends on output of conv2d layers
-        # and therefore the input image size, so compute it.
-        def conv2d_size_out(size, kernel_size = 5, stride = 2):
-            return (size - (kernel_size - 1) - 1) // stride  + 1
-        conv_w = conv2d_size_out(conv2d_size_out(conv2d_size_out(w)))
-        conv_h = conv2d_size_out(conv2d_size_out(conv2d_size_out(h)))
-        linear_input_size = conv_w * conv_h * 32
-        self.head = nn.Linear(linear_input_size, outputs)
+    def set_world_properties(self, n_actions):
+        self.n_actions = n_actions
+        self.actions = range(self.n_actions)
+        self.policy_net = DQN(outputs=self.n_actions)
+        # noinspection PyUnresolvedReferences
+        self.optimizer = Optimizer(self.policy_net.parameters())
 
-    # Called with either one element to determine next action, or a batch
-    # during optimization. Returns tensor([[left0exp,right0exp]...]).
-    def forward(self, x):
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = F.relu(self.bn2(self.conv2(x)))
-        x = F.relu(self.bn3(self.conv3(x)))
-        return self.head(x.view(x.size(0), -1))
+    def optimize(self, transition):
+        self.memory.push(transition)
+        transitions = self.memory.get_batch()
+        batch = Transition(*zip(*transitions))
+        curr_state_batch = stack(batch.curr_state)
+        prev_state_batch = stack(batch.prev_state)
+        last_action_batch = stack(batch.last_action).unsqueeze(1)
+        reward_batch = stack(batch.reward)
+        # Compute Q(s_t, a) - the model computes Q(s_t), then we select the columns of actions taken. These are the
+        # actions which would've been taken for each batch state according to policy_net.
+        state_action_values = self.policy_net(prev_state_batch).gather(1, last_action_batch).squeeze(1)
+        # Compute V(s_{t+1}) for all current states. Expected values of actions for curr_state_batch are computed based
+        # on the policy_net; selecting their best reward with max(1)[0].
+        state_values = self.policy_net(curr_state_batch).max(1)[0].detach()
+        # Compute the expected Q values
+        expected_state_action_values = (state_values * self.gamma) + reward_batch
+        # Compute Huber loss
+        loss = self.loss(state_action_values, expected_state_action_values)
+
+        # Optimize the model
+        self.optimizer.zero_grad()
+        loss.backward()
+        for param in self.policy_net.parameters():
+            param.grad.data.clamp_(-1, 1)
+        self.optimizer.step()
+
+    def strategy(self, state):
+        # Explore or Exploit
+        return choice(self.actions) if self.epsilon > random() \
+            else self.policy_net(state.unsqueeze(0)).max(1)[1].detach()
 
 
 class ReplayMemory:
-    def __init__(self, capacity):
+    def __init__(self, capacity, batch_size):
         self.capacity = capacity
+        self.batch_size = batch_size
         self.memory = [None] * capacity
         self.position = 0
 
     def __len__(self):
         return len(self.memory)
 
-    def get_random(self, batch_size):
-        return sample(self.memory, batch_size)
+    def get_batch(self):
+        return sample(self.memory, self.batch_size)
 
-    def push(self, *args):
-        self.memory[self.position] = Transition(*args)
+    def push(self, transition):
+        self.memory[self.position] = transition
         self.position = (self.position + 1) % self.capacity
 
 
+class DQN(Module):
+    def __init__(self, outputs=5):
+        super(DQN, self).__init__()
+        self.conv1 = Conv2d(1, 8, kernel_size=3)
+        self.bn1 = BatchNorm2d(8)
+        self.head = Linear(72, outputs)
+
+    def forward(self, x):
+        x = relu(self.bn1(self.conv1(x)))
+        return self.head(x.view(x.size(0), -1))
+
+
 if __name__ == '__main__':
-    MAX_EPOCHS = 50000
-    PRINT_NUM = MAX_EPOCHS // 500
-    ALPHA = 0.5
+    MAX_EPOCHS = 10000
+    PRINT_NUM = MAX_EPOCHS // 100
     GAMMA = 0.95
-    MEMORY_SIZE = 512
+    MEMORY_SIZE = 64
     BATCH_SIZE = 64
 
     plot = Plot(MAX_EPOCHS, rolling={'method': 'mean', 'N': PRINT_NUM}, figure_num=0)
     plot_epsilon = Plot(MAX_EPOCHS, title='Epsilon vs Epoch', ylabel='Epsilon', figure_num=1)
 
-    memory = ReplayMemory(MEMORY_SIZE)
     eps = Epsilon(MAX_EPOCHS)
-    policy = Policy(ALPHA, GAMMA, eps.epsilon)
+    policy = Policy(MEMORY_SIZE, BATCH_SIZE, GAMMA, eps.epsilon)
     world = World(policy.strategy)
-    policy.set_world_properties(world.actions, world.valid_pos)
-    policy.set_actor_properties(world.player.next_pos)
-    policy.validate(world.curr_state())  # Init state 0 in dictionary
+    policy.set_world_properties(len(world.actions))
 
     # Fill replay memory
     for i in range(MEMORY_SIZE):
         if world.play(silent=True):
-            memory.push(world.prev_state(), world.last_action(), world.curr_state(), world.reward())
+            policy.memory.push(world.transition())
         else:
-            memory.push(world.prev_state(), world.last_action(), world.curr_state(), world.reward())
+            policy.memory.push(world.transition())
             world.reset()
     world.reset()
 
     tictoc = TicToc(MAX_EPOCHS)
     for epoch in range(MAX_EPOCHS):
         while world.play(silent=True):
-            memory.push(world.prev_state(), world.last_action(), world.curr_state(), world.reward())
-            for transition in memory.get_random(BATCH_SIZE):
-                policy.optimize(transition)
-        memory.push(world.prev_state(), world.last_action(), world.curr_state(), world.reward())
-        for transition in memory.get_random(BATCH_SIZE):
-            policy.optimize(transition)
+            policy.optimize(world.transition())
+        policy.optimize(world.transition())
         plot.update(epoch, world.step_count())
         plot_epsilon.update(epoch, policy.epsilon)
         if (epoch + 1) % PRINT_NUM == 0:
