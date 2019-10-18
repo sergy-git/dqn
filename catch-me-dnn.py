@@ -3,7 +3,7 @@ from random import choice, random, sample
 from time import sleep
 from typing import List
 from torch import tensor, float, stack, save, load
-from torch.nn import Module, Conv2d, BatchNorm2d, Linear
+from torch.nn import Module, ModuleList, Linear, BatchNorm1d
 from torch.optim import RMSprop as Optimizer
 from torch.nn import SmoothL1Loss as Loss
 from torch.nn.functional import relu
@@ -40,10 +40,10 @@ class Actor:
     def next_pos(self, action):
         return self.x + action[0], self.y + action[1]
 
-    def move(self, policy_strategy, valid_pos):
+    def move(self, policy_strategy, valid_pos, random_action):
         action = policy_strategy()
-        if not valid_pos(self.next_pos(action)):
-            action = (0, 0)
+        while not valid_pos(self.next_pos(action)):
+            action = random_action()
         x_new, y_new = self.next_pos(action)
         self.action = action
         self.x_prev = self.x
@@ -144,9 +144,9 @@ class World:
     def game_over(self):
         game_over = any(map(lambda enemy: enemy.curr_pos() == self.player.curr_pos(), self.enemies))
         if game_over:
-            self._reward = -1
+            self._reward = -100
         else:
-            self._reward = 1 if not self._last_action == (0, 0) else .9
+            self._reward = 1 if not self._last_action == (0, 0) else -1
         return game_over
 
     def random_action(self):
@@ -156,9 +156,9 @@ class World:
         return self.actions[self.policy(self.state())]
 
     def play(self, silent=False):
-        self.player.move(self.strategy, self.valid_pos)
+        self.player.move(self.strategy, self.valid_pos, self.random_action)
         for enemy in self.enemies:
-            enemy.move(self.random_action, self.valid_pos)
+            enemy.move(self.random_action, self.valid_pos, self.random_action)
         self._prev_state = self._curr_state
         self._last_action = self.player.action
         self._curr_state = self.state()
@@ -176,10 +176,11 @@ class World:
 
 
 class Epsilon:
-    def __init__(self, max_epochs, p_random=0, p_greedy=.15):
+    def __init__(self, max_epochs, p_random=.01, p_greedy=.50, greedy_min=1e-6):
         self._random = round(p_random * max_epochs)
         self._greedy = round(p_greedy * max_epochs)
         self._max_epochs = max_epochs - self._random - self._greedy
+        self._greedy_min = greedy_min
         self._count = 0
         self.epsilon = 1
 
@@ -187,7 +188,7 @@ class Epsilon:
         if self._random <= self._count < self._max_epochs + self._random:
             self.epsilon = 1 - (self._count - self._random) ** 2 / self._max_epochs ** 2
         elif self._count > self._max_epochs + self._random:
-            self.epsilon = 0
+            self.epsilon = self._greedy_min
         self._count += 1
         return self.epsilon
 
@@ -197,54 +198,63 @@ class Policy:
         self.memory = ReplayMemory(memory_size, batch_size)
         self.gamma = gamma
         self.epsilon = epsilon
-        self.n_actions = None
         self.actions = None
         self.net = None
         self.optimizer = None
         self.loss = Loss()
-        self._loss = None
         self._rolling_loss = 0
         self._counts = 0
 
-    def set_world_properties(self, n_actions):
-        self.n_actions = n_actions
-        self.actions = range(self.n_actions)
-        self.net = DQN(outputs=self.n_actions)
-        # noinspection PyUnresolvedReferences
-        self.optimizer = Optimizer(self.net.parameters())
+    def set_world_properties(self, n_actions, n, m):
+        self.actions = range(n_actions)
+        self.net = DQN(inputs=n * m, outputs=n_actions)
 
     def optimize(self, transition):
         self.memory.push(transition)
-        transitions = self.memory.get_batch()
-        batch = Transition(*zip(*transitions))
-        curr_state_batch = stack(batch.curr_state)
-        prev_state_batch = stack(batch.prev_state)
-        last_action_batch = stack(batch.last_action).unsqueeze(1)
-        reward_batch = stack(batch.reward)
-        # Compute Q(s_t, a) - the model computes Q(s_t), then we select the columns of actions taken. These are the
-        # actions which would've been taken for each batch state according to policy_net.
-        state_action_values = self.net(prev_state_batch).gather(1, last_action_batch).squeeze(1)
-        # Compute V(s_{t+1}) for all current states. Expected values of actions for curr_state_batch are computed based
-        # on the policy_net; selecting their best reward with max(1)[0].
-        state_values = self.net(curr_state_batch).max(1)[0].detach()
-        # Compute the expected Q values
-        expected_state_action_values = (state_values * self.gamma) + reward_batch
-        # Compute Huber loss
-        self._loss = self.loss(state_action_values, expected_state_action_values)
-        self._rolling_loss += self._loss
-        self._counts += 1
+        if self.optimizer is not None:
+            transitions = self.memory.get_batch()
+            if transitions is not None:
+                batch = Transition(*zip(*transitions))
+                curr_state_batch = stack(batch.curr_state)
+                prev_state_batch = stack(batch.prev_state)
+                last_action_batch = stack(batch.last_action).unsqueeze(1)
+                reward_batch = stack(batch.reward).unsqueeze(1)
 
-        # Optimize the model
-        self.optimizer.zero_grad()
-        self._loss.backward()
-        for param in self.net.parameters():
-            param.grad.data.clamp_(-1, 1)
-        self.optimizer.step()
+                # Compute Q(s_t, a) - the model computes Q(s_t), then we select the columns of actions taken. These
+                # are the actions which would've been taken for each batch state according to policy_net.
+                state_action_values = self.net(prev_state_batch).gather(1, last_action_batch)
+
+                # Compute V(s_{t+1}) for all current states. Expected values of actions for curr_state_batch are
+                # computed based on the policy_net; selecting their best reward with max(1)[0].
+                state_values = self.net(curr_state_batch).max(1)[0].unsqueeze(1).detach()
+
+                # Compute the expected Q values
+                expected_state_action_values = (state_values * self.gamma) + reward_batch
+
+                # Compute Huber loss
+                loss = self.loss(state_action_values, expected_state_action_values)
+                self._rolling_loss += loss.detach()
+                self._counts += 1
+
+                # Optimize the model
+                self.optimizer.zero_grad()
+                loss.backward()
+                for param in self.net.parameters():
+                    param.grad.data.clamp_(-1, 1)
+                self.optimizer.step()
+        else:
+            self.optimizer = Optimizer(self.net.parameters()) if self.net is not None else None
 
     def strategy(self, state):
         # Explore or Exploit
-        return choice(self.actions) if self.epsilon > random() \
-            else self.net(state.unsqueeze(0)).max(1)[1].detach()
+        if self.epsilon > random():
+            action = choice(self.actions)
+        else:
+            self.net.eval()
+            action = self.net(state.unsqueeze(0)).max(1)[1].detach()
+            self.net.train()
+
+        return action
 
     def save(self, path):
         save(self.net.state_dict(), path)
@@ -254,7 +264,7 @@ class Policy:
         self.net.eval()
 
     def rolling_loss(self, reset=True):
-        rolling_loss = self._rolling_loss / self._counts
+        rolling_loss = self._rolling_loss / self._counts if not self._counts == 0 else None
         if reset:
             self._rolling_loss = 0
             self._counts = 0
@@ -265,59 +275,56 @@ class ReplayMemory:
     def __init__(self, capacity, batch_size):
         self.capacity = capacity
         self.batch_size = batch_size
-        self.memory = [None] * capacity
+        self.memory = []
         self.position = 0
 
     def __len__(self):
         return len(self.memory)
 
     def get_batch(self):
-        return sample(self.memory, self.batch_size)
+        return sample(self.memory, self.batch_size) if len(self) >= self.batch_size else None
 
     def push(self, transition):
+        if len(self) < self.capacity:
+            self.memory.append(None)
         self.memory[self.position] = transition
         self.position = (self.position + 1) % self.capacity
 
 
 class DQN(Module):
-    def __init__(self, outputs=5):
+
+    def __init__(self, inputs=25, hidden_depth=1, hidden_dim=16, outputs=5):
         super(DQN, self).__init__()
-        self.conv1 = Conv2d(1, 8, kernel_size=3)
-        self.bn1 = BatchNorm2d(8)
-        self.conv2 = Conv2d(8, 8, kernel_size=3)
-        self.head = Linear(8, outputs)
+        self._input = Linear(inputs, hidden_dim)
+
+        self._hidden_B = ModuleList([BatchNorm1d(hidden_dim) for _ in range(hidden_depth)])
+        self._hidden_L = ModuleList([Linear(hidden_dim, hidden_dim) for _ in range(hidden_depth)])
+        self._output = Linear(hidden_dim, outputs)
 
     def forward(self, x):
-        x = relu(self.bn1(self.conv1(x)))
-        x = relu(self.conv2(x))
-        return self.head(x.view(x.size(0), -1))
+        x = relu(self._input(x.view(x.size(0), -1)))
+        # noinspection PyTypeChecker
+        for batch_norm, linear in zip(self._hidden_B, self._hidden_L):
+            x = relu(batch_norm(linear(x)))
+        return self._output(x)
 
 
 if __name__ == '__main__':
-    MAX_EPOCHS = 2000
+    MAX_EPOCHS = 1000
     PRINT_NUM = 100
-    GAMMA = 0.95
-    MEMORY_SIZE = 128
-    BATCH_SIZE = 128
+    GAMMA = 0.999
+    MEMORY_SIZE = 32
+    BATCH_SIZE = 32
 
     plot = Plot(MAX_EPOCHS, rolling={'method': 'mean', 'N': PRINT_NUM}, figure_num=0)
     plot_epsilon = Plot(MAX_EPOCHS, title='Epsilon vs Epoch', ylabel='Epsilon', figure_num=1)
-    plot_loss = Plot(MAX_EPOCHS, title='Loss vs Epoch', ylabel='Epsilon', figure_num=2,
+    plot_loss = Plot(MAX_EPOCHS, title='Loss vs Epoch', ylabel='Loss', figure_num=2,
                      rolling={'method': 'mean', 'N': PRINT_NUM})
 
-    eps = Epsilon(MAX_EPOCHS)
+    eps = Epsilon(max_epochs=MAX_EPOCHS, p_random=0, p_greedy=1, greedy_min=0)
     policy = Policy(MEMORY_SIZE, BATCH_SIZE, GAMMA, eps.epsilon)
     world = World(policy.strategy)
-    policy.set_world_properties(len(world.actions))
-
-    # Fill replay memory
-    for i in range(MEMORY_SIZE):
-        if world.play(silent=True):
-            policy.memory.push(world.transition())
-        else:
-            policy.memory.push(world.transition())
-            world.reset()
-    world.reset()
+    policy.set_world_properties(len(world.actions), world.n, world.m)
 
     tictoc = TicToc(MAX_EPOCHS)
     for epoch in range(MAX_EPOCHS):
@@ -330,10 +337,7 @@ if __name__ == '__main__':
         if (epoch + 1) % PRINT_NUM == 0:
             tictoc.toc()
             print('Epoch %7d;' % (epoch + 1), 'Step count: %5d;' % plot.roll[epoch],
-                  'eta (s): %6.2f; ' % tictoc.eta(epoch))
-            plot.plot()
-            plot_epsilon.plot()
-            plot_loss.plot()
+                  'loss: %7.3f; ' % plot_loss.roll[epoch], 'eta (s): %6.2f; ' % tictoc.eta(epoch))
         if not epoch + 1 == MAX_EPOCHS:
             policy.epsilon = eps.step()
             world.reset()
@@ -344,3 +348,4 @@ if __name__ == '__main__':
           'Elapsed %.2f (s)' % tictoc.elapsed())
     plot.plot()
     plot_epsilon.plot()
+    plot_loss.plot()

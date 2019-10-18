@@ -21,10 +21,12 @@ class Plot:
 
     def roll_append(self, idx):
         if self.method is 'mean':
-            self.sum += self.line[idx]
+            add_val = self.line[idx]
+            self.sum += add_val if add_val is not None else 0
             if idx + 1 >= self.N:
                 self.roll[idx] = self.sum / self.N
-                self.sum -= self.line[idx + 1 - self.N]
+                del_val = self.line[idx + 1 - self.N]
+                self.sum -= del_val if del_val is not None else 0
 
     def update(self, idx, value):
         self.line[idx] = value
