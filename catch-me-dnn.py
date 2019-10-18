@@ -40,10 +40,10 @@ class Actor:
     def next_pos(self, action):
         return self.x + action[0], self.y + action[1]
 
-    def move(self, policy_strategy, valid_pos, random_action):
+    def move(self, policy_strategy, valid_pos):
         action = policy_strategy()
-        while not valid_pos(self.next_pos(action)):
-            action = random_action()
+        if not valid_pos(self.next_pos(action)):
+            action = (0, 0)
         x_new, y_new = self.next_pos(action)
         self.action = action
         self.x_prev = self.x
@@ -98,8 +98,8 @@ class World:
         self.policy = policy_strategy
         self.n = n
         self.m = m
-        self.player = Player(0, 0)
-        self.enemies = [Enemy(0, 2), Enemy(2, 2)]
+        self.player = Player(2, 2)
+        self.enemies = [Enemy(1, 3), Enemy(3, 1)]
         self.actors = [self.player] + self.enemies
         self.board = SimpleBoard(self.n, self.m, self.actors)
         self._step_count = 0
@@ -144,9 +144,11 @@ class World:
     def game_over(self):
         game_over = any(map(lambda enemy: enemy.curr_pos() == self.player.curr_pos(), self.enemies))
         if game_over:
-            self._reward = -100
+            self._reward = -2
+        elif self._last_action == (0, 0):
+            self._reward = -1
         else:
-            self._reward = 1 if not self._last_action == (0, 0) else -1
+            self._reward = 1
         return game_over
 
     def random_action(self):
@@ -156,9 +158,9 @@ class World:
         return self.actions[self.policy(self.state())]
 
     def play(self, silent=False):
-        self.player.move(self.strategy, self.valid_pos, self.random_action)
+        self.player.move(self.strategy, self.valid_pos)
         for enemy in self.enemies:
-            enemy.move(self.random_action, self.valid_pos, self.random_action)
+            enemy.move(self.random_action, self.valid_pos)
         self._prev_state = self._curr_state
         self._last_action = self.player.action
         self._curr_state = self.state()
@@ -310,18 +312,18 @@ class DQN(Module):
 
 
 if __name__ == '__main__':
-    MAX_EPOCHS = 1000
+    MAX_EPOCHS = 10000
     PRINT_NUM = 100
     GAMMA = 0.999
-    MEMORY_SIZE = 32
-    BATCH_SIZE = 32
+    MEMORY_SIZE = 1024
+    BATCH_SIZE = 1024
 
     plot = Plot(MAX_EPOCHS, rolling={'method': 'mean', 'N': PRINT_NUM}, figure_num=0)
     plot_epsilon = Plot(MAX_EPOCHS, title='Epsilon vs Epoch', ylabel='Epsilon', figure_num=1)
     plot_loss = Plot(MAX_EPOCHS, title='Loss vs Epoch', ylabel='Loss', figure_num=2,
                      rolling={'method': 'mean', 'N': PRINT_NUM})
 
-    eps = Epsilon(max_epochs=MAX_EPOCHS, p_random=0, p_greedy=1, greedy_min=0)
+    eps = Epsilon(max_epochs=MAX_EPOCHS, p_random=0.1, p_greedy=0.1, greedy_min=1e-4)
     policy = Policy(MEMORY_SIZE, BATCH_SIZE, GAMMA, eps.epsilon)
     world = World(policy.strategy)
     policy.set_world_properties(len(world.actions), world.n, world.m)
