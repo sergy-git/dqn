@@ -2,7 +2,7 @@ from q_tools import *
 from random import choice, random, sample
 from math import copysign
 from time import sleep
-from typing import List, Tuple, Callable
+from typing import List, Tuple, Callable, Optional
 from torch import tensor, float, stack, save, load
 from torch.nn import Module, ModuleList, Linear, BatchNorm1d
 from torch.optim import RMSprop as Optimizer
@@ -13,46 +13,46 @@ from collections import namedtuple
 # TODO: Combine with catch-me
 # TODO: Convert main to function with hyper parameters
 # TODO: Add run-me.py to run all
-# TODO: (optional) Add .json file for run settings
+# TODO: (optional) Add .json file for settings
 
 
 class Actor:
     """Actor class for 2D-board"""
+    _x: int
+    _y: int
+    _init_x: int
+    _init_y: int
+    _x_prev: int
+    _y_prev: int
+    _last_action: (int, int)
+
     def __init__(self, x: int, y: int):
         """
         :param x: actor initial x position index
         :param y: actor initial y position index
         """
-        # Allows Actor's reset with preserving initial (x, y) position index
-        self._init_x = x
-        self._init_y = y
-
-        # Set initial (x, y) position index
-        self._x = x
-        self._y = y
-
-        # Prepare empty variables for full transition description
-        self._x_prev = None
-        self._y_prev = None
-        self._last_action = None
-
         # Prepare empty variable for Actor type description
         self.type = None
 
+        # Actor's reset saving initial (x, y) position index
+        self.reset(x, y)
+
     def reset(self, x: int = None, y: int = None):
         """
-        Actor's reset, with preserving initial (x, y) position index if x & y not defined
+        Actor's reset, with preserving initial (x, y) position index, if x & y not defined
         :param x: Change initial x (optional)
         :param y: Change initial y (optional)
         """
-        # Preserve initial (x, y) position index
-        self._x = self._init_x if x is None else x
-        self._y = self._init_y if y is None else y
+        # Preserve initial (x, y) position index, if new x & y not selected
+        self._init_x = self._init_x if x is None else x
+        self._init_y = self._init_y if y is None else y
+        self._x = self._init_x
+        self._y = self._init_y
 
         # Clear full transition description
-        self._x_prev = None
-        self._y_prev = None
-        self._last_action = None
+        self._x_prev = self._init_x
+        self._y_prev = self._init_y
+        self._last_action = (0, 0)
 
     def curr_pos(self) -> (int, int):
         """
@@ -112,6 +112,8 @@ class Actor:
 
 class Player(Actor):
     """Actor from type Player"""
+    type: str
+
     def __init__(self, x: int, y: int):
         """
         :param x: player initial x position index
@@ -125,62 +127,119 @@ class Player(Actor):
 
 class Enemy(Actor):
     """Actor from type Enemy"""
+    type: str
+
     def __init__(self, x: int, y: int):
         # Initiate super class
         super().__init__(x, y)
         # Set actor type
         self.type = 'enemy'
 
-    def move_smart(self, player_position):
+    def move_smart(self, player_position: (int, int)):
+        """
+        Close gap between the Enemy and the Player
+        :param player_position: Players (x, y) position index, external information
+        """
+        # Get player position & self position
         px, py = player_position
         ex, ey = self.curr_pos()
+
+        # Calculate best action, evaluate it's absolute value and sign
         dx = px - ex
         dy = py - ey
         vx = abs(dx)
         vy = abs(dy)
         sx = int(copysign(1, dx)) if not dx == 0 else 0
         sy = int(copysign(1, dy)) if not dy == 0 else 0
+
+        # Choose best action to catch the Player
         if vx > vy:
+            # The gap along x-axis is greater, close gap along x-axis
             action = (sx, 0)
         elif vx < vy:
+            # The gap along y-axis is greater, close gap along y-axis
             action = (0, sy)
         else:
+            # The gaps along x-axis & y-axis are same, chose randomly
             action = choice([(sx, 0), (0, sy)])
 
         # Perform step, there is no need to verify new position validity
         self.step(action)
 
 
-class SimpleBoard:
-    def __init__(self, n, m, actors):
-        self.n = n
-        self.m = m
-        self.actors = actors
+class Board2D:
+    """Class for 2D-board"""
+    _n: int
+    _m: int
+    _board: List[List[str]]
 
-    def draw(self):
-        rows = [['[ ]'] * self.n for _ in range(self.m)]
-        for actor in self.actors:
-            x, y = actor.curr_pos()
-            if actor.type is 'enemy':
-                rows[y][x] = '[x]'
-            else:
-                rows[y][x] = '[@]'
+    def __init__(self, n: int, m: int):
+        """
+        Initiate 2D board, with origin at upper-left corner
+        :param n: number of cells on x-axis, width
+        :param m: number of cells on y-axis, height
+        """
+        self._n = n
+        self._m = m
+        self._board = self._clear_board()
 
-        print('\n' * 5)  # Clear screen
-        for row in rows:
+    def _clear_board(self) -> List[List[str]]:
+        """
+        Prepare 2D board with empty cells
+        :return: 2D board n * m, of type: [['[ ]', ... , '[ ]'], ... , ['[ ]', ... , '[ ]']]
+        """
+        return [['[ ]'] * self._n for _ in range(self._m)]
+
+    def _draw(self, screen_height: int):
+        """
+        Clear screen and print 2D board
+        :param screen_height: Number of <LF> required to clear the screen
+        """
+        # Clear screen
+        print('\n' * screen_height)
+        # Print 2D board
+        for row in self._board:
             for cell in row:
                 print(cell, end='')
             print()
-        print('___' * self.n)
+        print('___' * self._n)
+
+
+class CatchMeBoard(Board2D):
+    """Class for catch-me board"""
+    _actors: List[Actor]
+
+    def __init__(self, n: int, m: int, actors: List[Actor]):
+        """
+        Initiate 2D board, with origin at upper-left corner, with Actors
+        :param n: number of cells on x-axis, width
+        :param m: number of cells on y-axis, height
+        :param actors: list of Actors, Player & Enemies
+        """
+        super().__init__(n, m)
+        self._actors = actors
+
+    def draw(self, screen_height: int = 5):
+        """
+        Clear screen, mark Actors & print 2D board
+        :param screen_height: Number of <LF> required to clear the screen
+        """
+        # Clear screen
+        self._board = self._clear_board()
+
+        # Mark Actors
+        for actor in self._actors:
+            x, y = actor.curr_pos()
+            self._board[y][x] = '[x]' if actor.type is 'enemy' else '[@]'
+
+        # Print 2D board
+        self._draw(screen_height)
 
 
 class World:
     player: Actor
     enemies: List[Enemy]
     actors: List[Actor]
-
-    # Full transition definition
-    Transition = namedtuple('Transition', ('prev_state', 'last_action', 'curr_state', 'reward'))
 
     def __init__(self, policy_strategy, n=5, m=5):
         self.actions = ((0, 0), (0, 1), (1, 0), (0, -1), (-1, 0))
@@ -191,12 +250,13 @@ class World:
         self.player = Player(2, 2)
         self.enemies = [Enemy(0, 4), Enemy(4, 0)]
         self.actors = [self.player] + self.enemies
-        self.board = SimpleBoard(self.n, self.m, self.actors)
+        self.board = CatchMeBoard(self.n, self.m, self.actors)
         self._step_count = 0
-        self._reward = 0
+        self._reward = None
         self._prev_state = None
         self._last_action = None
         self._curr_state = self.state()
+        self.Transition = namedtuple('Transition', ('prev_state', 'last_action', 'curr_state', 'reward'))
 
     def step_count(self):
         return self._step_count
@@ -453,7 +513,7 @@ if __name__ == '__main__':
     plot_epsilon.plot()
     plot_loss.plot()
 
-    # policy.epsilon = 0
-    # world.reset()
-    # while world.play(silent=False, smart_enemy=True):
-    #     pass
+    policy.epsilon = 0
+    world.reset()
+    while world.play(silent=False, smart_enemy=True):
+        pass
