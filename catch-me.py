@@ -1,9 +1,11 @@
+# inspired by post: https://habr.com/ru/post/345656/
 from q_tools import *
 from random import choice, random
 from time import sleep
 from typing import List
 from pickle import dump, load
 from math import copysign
+# TODO: combine with catch-me-dnn
 
 
 class Actor:

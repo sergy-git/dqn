@@ -238,6 +238,7 @@ class Policy:
         self.actions = range(n_actions)
         self.net = DQN(inputs=n * m, outputs=n_actions)
 
+    # TODO: combine optimize & optimize_last, with flag
     def optimize(self, transition):
         self.memory.push(transition)
         if self.optimizer is not None:
@@ -294,7 +295,7 @@ class Policy:
             # computed based on the policy_net; selecting their best reward with max(1)[0].
             state_values = self.net(curr_state_batch).max(1)[0].unsqueeze(1).detach()
 
-            # Compute the expected Q values
+            # Compute the expected Q values (target)
             expected_state_action_values = (state_values * self.gamma) + reward_batch
 
             # Compute Huber loss
@@ -380,8 +381,8 @@ class DQN(Module):
 
 
 if __name__ == '__main__':
-    MAX_EPOCHS = 1000000
-    PRINT_NUM = 100
+    MAX_EPOCHS = 1500000
+    PRINT_NUM = 10000
     GAMMA = 0.999
     MEMORY_SIZE = 4096
     BATCH_SIZE = 64
@@ -392,7 +393,7 @@ if __name__ == '__main__':
     plot_loss = Plot(MAX_EPOCHS, title='Loss vs Epoch', ylabel='Loss', figure_num=2,
                      rolling={'method': 'mean', 'N': PRINT_NUM})
 
-    eps = Epsilon(max_epochs=MAX_EPOCHS, p_random=0.1, p_greedy=0.1, greedy_min=1e-4)
+    eps = Epsilon(max_epochs=MAX_EPOCHS, p_random=1, p_greedy=0, greedy_min=1e-4)
     policy = Policy(MEMORY_SIZE, BATCH_SIZE, GAMMA, eps.epsilon)
     world = World(policy.strategy)
     policy.set_world_properties(len(world.actions), world.n, world.m)
@@ -423,6 +424,7 @@ if __name__ == '__main__':
     plot_epsilon.plot()
     plot_loss.plot()
 
+    policy.epsilon = 0
     world.reset()
     while world.play(silent=False, smart_enemy=True):
         pass
