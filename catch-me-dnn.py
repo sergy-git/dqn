@@ -392,7 +392,7 @@ if __name__ == '__main__':
     plot_loss = Plot(MAX_EPOCHS, title='Loss vs Epoch', ylabel='Loss', figure_num=2,
                      rolling={'method': 'mean', 'N': PRINT_NUM})
 
-    eps = Epsilon(max_epochs=MAX_EPOCHS, p_random=0.01, p_greedy=0.5, greedy_min=1e-4)
+    eps = Epsilon(max_epochs=MAX_EPOCHS, p_random=0.1, p_greedy=0.1, greedy_min=1e-4)
     policy = Policy(MEMORY_SIZE, BATCH_SIZE, GAMMA, eps.epsilon)
     world = World(policy.strategy)
     policy.set_world_properties(len(world.actions), world.n, world.m)
@@ -423,6 +423,6 @@ if __name__ == '__main__':
     plot_epsilon.plot()
     plot_loss.plot()
 
-    # world.reset()
-    # while world.play(silent=False, smart_enemy=True):
-    #     pass
+    world.reset()
+    while world.play(silent=False, smart_enemy=True):
+        pass
