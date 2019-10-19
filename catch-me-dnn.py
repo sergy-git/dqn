@@ -2,70 +2,137 @@ from q_tools import *
 from random import choice, random, sample
 from math import copysign
 from time import sleep
-from typing import List
+from typing import List, Tuple, Callable
 from torch import tensor, float, stack, save, load
 from torch.nn import Module, ModuleList, Linear, BatchNorm1d
 from torch.optim import RMSprop as Optimizer
 from torch.nn import SmoothL1Loss as Loss
 from torch.nn.functional import relu
 from collections import namedtuple
-
-
-Transition = namedtuple('Transition', ('prev_state', 'last_action', 'curr_state', 'reward'))
+# TODO: Add comments
+# TODO: Combine with catch-me
+# TODO: Convert main to function with hyper parameters
+# TODO: Add run-me.py to run all
+# TODO: (optional) Add .json file for run settings
 
 
 class Actor:
-    def __init__(self, x, y):
-        self.init_x = x
-        self.init_y = y
-        self.x = self.init_x
-        self.y = self.init_y
-        self.x_prev = None
-        self.y_prev = None
-        self.action = None
+    """Actor class for 2D-board"""
+    def __init__(self, x: int, y: int):
+        """
+        :param x: actor initial x position index
+        :param y: actor initial y position index
+        """
+        # Allows Actor's reset with preserving initial (x, y) position index
+        self._init_x = x
+        self._init_y = y
+
+        # Set initial (x, y) position index
+        self._x = x
+        self._y = y
+
+        # Prepare empty variables for full transition description
+        self._x_prev = None
+        self._y_prev = None
+        self._last_action = None
+
+        # Prepare empty variable for Actor type description
         self.type = None
 
-    def reset(self):
-        self.x = self.init_x
-        self.y = self.init_y
-        self.x_prev = None
-        self.y_prev = None
-        self.action = None
+    def reset(self, x: int = None, y: int = None):
+        """
+        Actor's reset, with preserving initial (x, y) position index if x & y not defined
+        :param x: Change initial x (optional)
+        :param y: Change initial y (optional)
+        """
+        # Preserve initial (x, y) position index
+        self._x = self._init_x if x is None else x
+        self._y = self._init_y if y is None else y
 
-    def curr_pos(self):
-        return self.x, self.y
+        # Clear full transition description
+        self._x_prev = None
+        self._y_prev = None
+        self._last_action = None
 
-    def prev_pos(self):
-        return self.x_prev, self.y_prev
+    def curr_pos(self) -> (int, int):
+        """
+        Get current position
+        :return: (x, y) current position tuple
+        """
+        return self._x, self._y
 
-    def next_pos(self, action):
-        return self.x + action[0], self.y + action[1]
+    def last_action(self) -> (int, int):
+        """
+        Get last action value
+        :return: last action (x, y) tuple
+        """
+        return self._last_action
 
-    def move(self, policy_strategy, valid_pos):
-        action = policy_strategy()
+    def prev_pos(self) -> (int, int):
+        """
+        Get previous position
+        :return: (x, y) previous position tuple
+        """
+        return self._x_prev, self._y_prev
+
+    def next_pos(self, action: (int, int)) -> (int, int):
+        """
+        Calculates next position for specific action, adds action (x, y) values to current position (x, y)
+        :param action: (x, y) tuple
+        :return: (x, y) next position tuple
+        """
+        return self._x + action[0], self._y + action[1]
+
+    def move(self, action: (int, int), valid_pos: Callable[[Tuple[int, int]], bool]):
+        """
+        Perform single move of an Actor according to action & verify move validity. If invalid stay on same position
+        :param action: (x, y) tuple
+        :param valid_pos: external function that verify position validity, valid_pos(position: (int, int)) -> bool
+        """
+        # Verify new position validity, if invalid stay on same position
         if not valid_pos(self.next_pos(action)):
             action = (0, 0)
+
+        # Perform step
+        self.step(action)
+
+    def step(self,  action: (int, int)):
+        """
+        Perform single step of an Actor according to input action
+        :param action: (x, y) tuple
+        """
+        # Perform move and set new full transition description: previous position, action, current position
         x_new, y_new = self.next_pos(action)
-        self.action = action
-        self.x_prev = self.x
-        self.y_prev = self.y
-        self.x = x_new
-        self.y = y_new
+        self._last_action = action
+        self._x_prev = self._x
+        self._y_prev = self._y
+        self._x = x_new
+        self._y = y_new
 
 
 class Player(Actor):
-    def __init__(self, x, y):
+    """Actor from type Player"""
+    def __init__(self, x: int, y: int):
+        """
+        :param x: player initial x position index
+        :param y: player initial y position index
+        """
+        # Initiate super class
         super().__init__(x, y)
+        # Set actor type
         self.type = 'player'
 
 
 class Enemy(Actor):
-    def __init__(self, x, y):
+    """Actor from type Enemy"""
+    def __init__(self, x: int, y: int):
+        # Initiate super class
         super().__init__(x, y)
+        # Set actor type
         self.type = 'enemy'
 
-    def move_smart(self, position):
-        px, py = position
+    def move_smart(self, player_position):
+        px, py = player_position
         ex, ey = self.curr_pos()
         dx = px - ex
         dy = py - ey
@@ -80,12 +147,8 @@ class Enemy(Actor):
         else:
             action = choice([(sx, 0), (0, sy)])
 
-        x_new, y_new = self.next_pos(action)
-        self.action = action
-        self.x_prev = self.x
-        self.y_prev = self.y
-        self.x = x_new
-        self.y = y_new
+        # Perform step, there is no need to verify new position validity
+        self.step(action)
 
 
 class SimpleBoard:
@@ -115,6 +178,9 @@ class World:
     player: Actor
     enemies: List[Enemy]
     actors: List[Actor]
+
+    # Full transition definition
+    Transition = namedtuple('Transition', ('prev_state', 'last_action', 'curr_state', 'reward'))
 
     def __init__(self, policy_strategy, n=5, m=5):
         self.actions = ((0, 0), (0, 1), (1, 0), (0, -1), (-1, 0))
@@ -148,7 +214,7 @@ class World:
         return self._curr_state
 
     def transition(self):
-        return Transition(self.prev_state(), self.last_action(), self.curr_state(), self.reward())
+        return self.Transition(self.prev_state(), self.last_action(), self.curr_state(), self.reward())
 
     def reset(self):
         self._step_count = 0
@@ -182,14 +248,14 @@ class World:
         return self.actions[self.policy(self.state())]
 
     def play(self, silent=False, smart_enemy=True):
-        self.player.move(self.strategy, self.valid_pos)
+        self.player.move(self.strategy(), self.valid_pos)
         for enemy in self.enemies:
             if smart_enemy:
                 enemy.move_smart(self.player.curr_pos())
             else:
-                enemy.move(self.random_action, self.valid_pos)
+                enemy.move(self.random_action(), self.valid_pos)
         self._prev_state = self._curr_state
-        self._last_action = self.player.action
+        self._last_action = self.player.last_action()
         self._curr_state = self.state()
         self._step_count += 1
         if not silent:
@@ -223,65 +289,29 @@ class Epsilon:
 
 
 class Policy:
-    def __init__(self, memory_size, batch_size, gamma=0.9, epsilon=0):
-        self.memory = ReplayMemory(memory_size, batch_size)
+    def __init__(self, memory_size, gamma=0.9, epsilon=0):
+        self.memory = ReplayMemory(memory_size)
         self.gamma = gamma
         self.epsilon = epsilon
         self.actions = None
         self.net = None
         self.optimizer = None
+        self.Transition = None
         self.loss = Loss()
         self._rolling_loss = 0
         self._counts = 0
 
-    def set_world_properties(self, n_actions, n, m):
+    def set_world_properties(self, transition, n_actions, n, m):
+        self.Transition = transition
         self.actions = range(n_actions)
         self.net = DQN(inputs=n * m, outputs=n_actions)
+        # noinspection PyUnresolvedReferences
+        self.optimizer = Optimizer(self.net.parameters())
 
-    # TODO: combine optimize & optimize_last, with flag
-    def optimize(self, transition):
-        self.memory.push(transition)
-        if self.optimizer is not None:
-            transitions = self.memory.get_batch()
-            if transitions is not None:
-                batch = Transition(*zip(*transitions))
-                curr_state_batch = stack(batch.curr_state)
-                prev_state_batch = stack(batch.prev_state)
-                last_action_batch = stack(batch.last_action).unsqueeze(1)
-                reward_batch = stack(batch.reward).unsqueeze(1)
-
-                # Compute Q(s_t, a) - the model computes Q(s_t), then we select the columns of actions taken. These
-                # are the actions which would've been taken for each batch state according to policy_net.
-                state_action_values = self.net(prev_state_batch).gather(1, last_action_batch)
-
-                # Compute V(s_{t+1}) for all current states. Expected values of actions for curr_state_batch are
-                # computed based on the policy_net; selecting their best reward with max(1)[0].
-                state_values = self.net(curr_state_batch).max(1)[0].unsqueeze(1).detach()
-
-                # Compute the expected Q values
-                expected_state_action_values = (state_values * self.gamma) + reward_batch
-
-                # Compute Huber loss
-                loss = self.loss(state_action_values, expected_state_action_values)
-                self._rolling_loss += loss.detach()
-                self._counts += 1
-
-                # Optimize the model
-                self.optimizer.zero_grad()
-                loss.backward()
-                for param in self.net.parameters():
-                    param.grad.data.clamp_(-1, 1)
-                self.optimizer.step()
-        else:
-            self.optimizer = Optimizer(self.net.parameters()) if self.net is not None else None
-
-    def optimize_last(self, batch_size):
-        if self.optimizer is None:
-            self.optimizer = Optimizer(self.net.parameters())
-
-        transitions = self.memory.get_last(batch_size)
+    def optimize(self, batch_size, random_batch=True):
+        transitions = self.memory.get_batch(batch_size) if random_batch else self.memory.get_last(batch_size)
         if transitions is not None:
-            batch = Transition(*zip(*transitions))
+            batch = self.Transition(*zip(*transitions))
             curr_state_batch = stack(batch.curr_state)
             prev_state_batch = stack(batch.prev_state)
             last_action_batch = stack(batch.last_action).unsqueeze(1)
@@ -337,17 +367,16 @@ class Policy:
 
 
 class ReplayMemory:
-    def __init__(self, capacity, batch_size):
+    def __init__(self, capacity):
         self.capacity = capacity
-        self.batch_size = batch_size
         self.memory = []
         self.position = 0
 
     def __len__(self):
         return len(self.memory)
 
-    def get_batch(self):
-        return sample(self.memory, self.batch_size) if len(self) >= self.batch_size else None
+    def get_batch(self, batch_size):
+        return sample(self.memory, batch_size) if len(self) >= batch_size else None
 
     def get_last(self, batch_size):
         if batch_size > self.capacity:
@@ -381,10 +410,10 @@ class DQN(Module):
 
 
 if __name__ == '__main__':
-    MAX_EPOCHS = 1500000
-    PRINT_NUM = 10000
+    MAX_EPOCHS = 1500
+    PRINT_NUM = 100
     GAMMA = 0.999
-    MEMORY_SIZE = 4096
+    MEMORY_SIZE = 128
     BATCH_SIZE = 64
     NET_PATH = './mem/policy_net.pkl'
 
@@ -393,17 +422,17 @@ if __name__ == '__main__':
     plot_loss = Plot(MAX_EPOCHS, title='Loss vs Epoch', ylabel='Loss', figure_num=2,
                      rolling={'method': 'mean', 'N': PRINT_NUM})
 
-    eps = Epsilon(max_epochs=MAX_EPOCHS, p_random=1, p_greedy=0, greedy_min=1e-4)
-    policy = Policy(MEMORY_SIZE, BATCH_SIZE, GAMMA, eps.epsilon)
+    eps = Epsilon(max_epochs=MAX_EPOCHS, p_random=0.1, p_greedy=0.1, greedy_min=1e-4)
+    policy = Policy(MEMORY_SIZE, GAMMA, eps.epsilon)
     world = World(policy.strategy)
-    policy.set_world_properties(len(world.actions), world.n, world.m)
+    policy.set_world_properties(world.Transition, len(world.actions), world.n, world.m)
 
     tictoc = TicToc(MAX_EPOCHS)
     for epoch in range(MAX_EPOCHS):
-        while world.play(silent=True, smart_enemy=True):
+        while world.play(silent=True, smart_enemy=False):
             policy.memory.push(world.transition())
         policy.memory.push(world.transition())
-        policy.optimize_last(world.step_count())
+        policy.optimize(BATCH_SIZE, random_batch=True)
         plot.update(epoch, world.step_count())
         plot_epsilon.update(epoch, policy.epsilon)
         plot_loss.update(epoch, policy.rolling_loss())
@@ -424,7 +453,7 @@ if __name__ == '__main__':
     plot_epsilon.plot()
     plot_loss.plot()
 
-    policy.epsilon = 0
-    world.reset()
-    while world.play(silent=False, smart_enemy=True):
-        pass
+    # policy.epsilon = 0
+    # world.reset()
+    # while world.play(silent=False, smart_enemy=True):
+    #     pass
