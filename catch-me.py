@@ -2,6 +2,8 @@ from q_tools import *
 from random import choice, random
 from time import sleep
 from typing import List
+from pickle import dump, load
+from math import copysign
 
 
 class Actor:
@@ -56,6 +58,29 @@ class Enemy(Actor):
         super().__init__(x, y)
         self.type = 'enemy'
 
+    def move_smart(self, position):
+        px, py = position
+        ex, ey = self.curr_pos()
+        dx = px - ex
+        dy = py - ey
+        vx = abs(dx)
+        vy = abs(dy)
+        sx = int(copysign(1, dx)) if not dx == 0 else 0
+        sy = int(copysign(1, dy)) if not dy == 0 else 0
+        if vx > vy:
+            action = (sx, 0)
+        elif vx < vy:
+            action = (0, sy)
+        else:
+            action = choice([(sx, 0), (0, sy)])
+
+        x_new, y_new = self.next_pos(action)
+        self.action = action
+        self.x_prev = self.x
+        self.y_prev = self.y
+        self.x = x_new
+        self.y = y_new
+
 
 class SimpleBoard:
     def __init__(self, n, m, actors):
@@ -82,7 +107,7 @@ class SimpleBoard:
 
 class World:
     player: Actor
-    enemies: List[Actor]
+    enemies: List[Enemy]
     actors: List[Actor]
 
     def __init__(self, policy_strategy, n=5, m=5):
@@ -148,10 +173,13 @@ class World:
     def strategy(self):
         return self.policy(self.state(), self.random_action)
 
-    def play(self, silent=False):
+    def play(self, silent=False, smart_enemy=True):
         self.player.move(self.strategy, self.valid_pos)
         for enemy in self.enemies:
-            enemy.move(self.random_action, self.valid_pos)
+            if smart_enemy:
+                enemy.move_smart(self.player.curr_pos())
+            else:
+                enemy.move(self.random_action, self.valid_pos)
         self._prev_state = self._curr_state
         self._last_action = self.player.action
         self._curr_state = self.state()
@@ -160,14 +188,14 @@ class World:
             self.draw()
         return not self.game_over()
 
-    def state_image(self):
+    def _state_image_1d(self):
         state = list(0 for _ in range(self.n * self.m))
         for actor in self.actors:
             x, y = actor.curr_pos()
             state[x + y * self.m] = -1 if actor.type is 'enemy' else 1
         return tuple(state)
 
-    def state(self):
+    def _state_local(self):
         # the state is only near by 8 cell when player is in center
         px, py = self.player.curr_pos()
         state = list(0 for _ in range(9))
@@ -183,6 +211,9 @@ class World:
             if 0 <= ix < 3 and 0 <= iy < 3:
                 state[ix + iy * 3] = -1
         return tuple(state)
+
+    def state(self):
+        return self._state_image_1d()
 
 
 class Policy:
@@ -234,11 +265,21 @@ class Policy:
     def strategy(self, state, random_action):
         return random_action() if self.epsilon > random() else self.best_action[state]['action']
 
+    def save(self, path):
+        file = open(path, "wb")
+        dump(self.q, file)
+        file.close()
+
+    def load(self, path):
+        file = open(path, 'rb')
+        self.q = load(file)
+        file.close()
+
 
 class Epsilon:
     def __init__(self, max_epochs):
-        self._random = round(0.1 * max_epochs)
-        self._greedy = round(0.1 * max_epochs)
+        self._random = round(0.15 * max_epochs)
+        self._greedy = round(0.15 * max_epochs)
         self._max_epochs = max_epochs - self._random - self._greedy
         self._count = 0
         self.epsilon = 1
@@ -253,10 +294,11 @@ class Epsilon:
 
 
 if __name__ == '__main__':
-    MAX_EPOCHS = 10000
-    PRINT_NUM = MAX_EPOCHS // 50
+    MAX_EPOCHS = 100000
+    PRINT_NUM = 10000
     ALPHA = 0.5
     GAMMA = 0.95
+    save_path = './mem/policy_rlq.pkl'
 
     plot = Plot(MAX_EPOCHS, rolling={'method': 'mean', 'N': PRINT_NUM}, figure_num=0)
     plot_epsilon = Plot(MAX_EPOCHS, title='Epsilon vs Epoch', ylabel='Epsilon', figure_num=1)
@@ -270,7 +312,7 @@ if __name__ == '__main__':
 
     tictoc = TicToc(MAX_EPOCHS)
     for epoch in range(MAX_EPOCHS):
-        while world.play(silent=True):
+        while world.play(silent=True, smart_enemy=True):
             policy.optimize(world.prev_state(), world.last_action(), world.curr_state(), world.reward())
         policy.optimize(world.prev_state(), world.last_action(), world.curr_state(), world.reward())
         plot.update(epoch, world.step_count())
@@ -283,8 +325,13 @@ if __name__ == '__main__':
             policy.epsilon = eps.step()
             world.reset()
 
+    # policy.save(save_path)
     tictoc.toc()
     print('Max duration: %d;' % max(list(plot.roll.values())[-len(plot.roll) // 2:]),
           'Elapsed %.2f (s)' % tictoc.elapsed())
     plot.plot()
     plot_epsilon.plot()
+
+    # world.reset()
+    # while world.play(silent=False, smart_enemy=True):
+    #     pass

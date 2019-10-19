@@ -1,5 +1,6 @@
 from q_tools import *
 from random import choice, random, sample
+from math import copysign
 from time import sleep
 from typing import List
 from torch import tensor, float, stack, save, load
@@ -63,6 +64,29 @@ class Enemy(Actor):
         super().__init__(x, y)
         self.type = 'enemy'
 
+    def move_smart(self, position):
+        px, py = position
+        ex, ey = self.curr_pos()
+        dx = px - ex
+        dy = py - ey
+        vx = abs(dx)
+        vy = abs(dy)
+        sx = int(copysign(1, dx)) if not dx == 0 else 0
+        sy = int(copysign(1, dy)) if not dy == 0 else 0
+        if vx > vy:
+            action = (sx, 0)
+        elif vx < vy:
+            action = (0, sy)
+        else:
+            action = choice([(sx, 0), (0, sy)])
+
+        x_new, y_new = self.next_pos(action)
+        self.action = action
+        self.x_prev = self.x
+        self.y_prev = self.y
+        self.x = x_new
+        self.y = y_new
+
 
 class SimpleBoard:
     def __init__(self, n, m, actors):
@@ -89,7 +113,7 @@ class SimpleBoard:
 
 class World:
     player: Actor
-    enemies: List[Actor]
+    enemies: List[Enemy]
     actors: List[Actor]
 
     def __init__(self, policy_strategy, n=5, m=5):
@@ -99,7 +123,7 @@ class World:
         self.n = n
         self.m = m
         self.player = Player(2, 2)
-        self.enemies = [Enemy(1, 3), Enemy(3, 1)]
+        self.enemies = [Enemy(0, 4), Enemy(4, 0)]
         self.actors = [self.player] + self.enemies
         self.board = SimpleBoard(self.n, self.m, self.actors)
         self._step_count = 0
@@ -157,10 +181,13 @@ class World:
     def strategy(self):
         return self.actions[self.policy(self.state())]
 
-    def play(self, silent=False):
+    def play(self, silent=False, smart_enemy=True):
         self.player.move(self.strategy, self.valid_pos)
         for enemy in self.enemies:
-            enemy.move(self.random_action, self.valid_pos)
+            if smart_enemy:
+                enemy.move_smart(self.player.curr_pos())
+            else:
+                enemy.move(self.random_action, self.valid_pos)
         self._prev_state = self._curr_state
         self._last_action = self.player.action
         self._curr_state = self.state()
@@ -173,7 +200,7 @@ class World:
         state = [[10] * self.n for _ in range(self.m)]
         for actor in self.actors:
             x, y = actor.curr_pos()
-            state[x][y] = 127 if actor.type is 'enemy' else 255
+            state[y][x] = 127 if actor.type is 'enemy' else 255
         return tensor(state, dtype=float).unsqueeze(0)
 
 
@@ -247,6 +274,41 @@ class Policy:
         else:
             self.optimizer = Optimizer(self.net.parameters()) if self.net is not None else None
 
+    def optimize_last(self, batch_size):
+        if self.optimizer is None:
+            self.optimizer = Optimizer(self.net.parameters())
+
+        transitions = self.memory.get_last(batch_size)
+        if transitions is not None:
+            batch = Transition(*zip(*transitions))
+            curr_state_batch = stack(batch.curr_state)
+            prev_state_batch = stack(batch.prev_state)
+            last_action_batch = stack(batch.last_action).unsqueeze(1)
+            reward_batch = stack(batch.reward).unsqueeze(1)
+
+            # Compute Q(s_t, a) - the model computes Q(s_t), then we select the columns of actions taken. These
+            # are the actions which would've been taken for each batch state according to policy_net.
+            state_action_values = self.net(prev_state_batch).gather(1, last_action_batch)
+
+            # Compute V(s_{t+1}) for all current states. Expected values of actions for curr_state_batch are
+            # computed based on the policy_net; selecting their best reward with max(1)[0].
+            state_values = self.net(curr_state_batch).max(1)[0].unsqueeze(1).detach()
+
+            # Compute the expected Q values
+            expected_state_action_values = (state_values * self.gamma) + reward_batch
+
+            # Compute Huber loss
+            loss = self.loss(state_action_values, expected_state_action_values)
+            self._rolling_loss += loss.detach()
+            self._counts += 1
+
+            # Optimize the model
+            self.optimizer.zero_grad()
+            loss.backward()
+            for param in self.net.parameters():
+                param.grad.data.clamp_(-1, 1)
+            self.optimizer.step()
+
     def strategy(self, state):
         # Explore or Exploit
         if self.epsilon > random():
@@ -286,6 +348,12 @@ class ReplayMemory:
     def get_batch(self):
         return sample(self.memory, self.batch_size) if len(self) >= self.batch_size else None
 
+    def get_last(self, batch_size):
+        if batch_size > self.capacity:
+            raise ValueError
+        position = 0 if self.position >= batch_size else self.position
+        return self.memory[-(batch_size - position):] + self.memory[:position] if len(self) >= batch_size else None
+
     def push(self, transition):
         if len(self) < self.capacity:
             self.memory.append(None)
@@ -312,27 +380,29 @@ class DQN(Module):
 
 
 if __name__ == '__main__':
-    MAX_EPOCHS = 10000
+    MAX_EPOCHS = 1000000
     PRINT_NUM = 100
     GAMMA = 0.999
-    MEMORY_SIZE = 1024
-    BATCH_SIZE = 1024
+    MEMORY_SIZE = 4096
+    BATCH_SIZE = 64
+    NET_PATH = './mem/policy_net.pkl'
 
     plot = Plot(MAX_EPOCHS, rolling={'method': 'mean', 'N': PRINT_NUM}, figure_num=0)
     plot_epsilon = Plot(MAX_EPOCHS, title='Epsilon vs Epoch', ylabel='Epsilon', figure_num=1)
     plot_loss = Plot(MAX_EPOCHS, title='Loss vs Epoch', ylabel='Loss', figure_num=2,
                      rolling={'method': 'mean', 'N': PRINT_NUM})
 
-    eps = Epsilon(max_epochs=MAX_EPOCHS, p_random=0.1, p_greedy=0.1, greedy_min=1e-4)
+    eps = Epsilon(max_epochs=MAX_EPOCHS, p_random=0.01, p_greedy=0.5, greedy_min=1e-4)
     policy = Policy(MEMORY_SIZE, BATCH_SIZE, GAMMA, eps.epsilon)
     world = World(policy.strategy)
     policy.set_world_properties(len(world.actions), world.n, world.m)
 
     tictoc = TicToc(MAX_EPOCHS)
     for epoch in range(MAX_EPOCHS):
-        while world.play(silent=True):
-            policy.optimize(world.transition())
-        policy.optimize(world.transition())
+        while world.play(silent=True, smart_enemy=True):
+            policy.memory.push(world.transition())
+        policy.memory.push(world.transition())
+        policy.optimize_last(world.step_count())
         plot.update(epoch, world.step_count())
         plot_epsilon.update(epoch, policy.epsilon)
         plot_loss.update(epoch, policy.rolling_loss())
@@ -340,14 +410,19 @@ if __name__ == '__main__':
             tictoc.toc()
             print('Epoch %7d;' % (epoch + 1), 'Step count: %5d;' % plot.roll[epoch],
                   'loss: %7.3f; ' % plot_loss.roll[epoch], 'eta (s): %6.2f; ' % tictoc.eta(epoch))
+
         if not epoch + 1 == MAX_EPOCHS:
             policy.epsilon = eps.step()
             world.reset()
 
-    policy.save('./mem/policy_net.pkl')
+    policy.save(NET_PATH)
     tictoc.toc()
     print('Max duration: %d;' % max(list(plot.roll.values())[-len(plot.roll) // 2:]),
           'Elapsed %.2f (s)' % tictoc.elapsed())
     plot.plot()
     plot_epsilon.plot()
     plot_loss.plot()
+
+    # world.reset()
+    # while world.play(silent=False, smart_enemy=True):
+    #     pass
