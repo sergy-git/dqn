@@ -1,3 +1,7 @@
+# policy optimization taken from pytorch's REINFORCEMENT LEARNING (DQN) TUTORIAL:
+# https://pytorch.org/tutorials/intermediate/reinforcement_q_learning.html#reinforcement-learning-dqn-tutorial
+# idea for problem and q-learning policy taken from:
+# https://habr.com/ru/post/345656/
 from q_tools import *
 from random import choice, random, sample
 from math import copysign
@@ -9,8 +13,6 @@ from torch.nn import Module, ModuleList, Linear, BatchNorm1d
 from torch.optim import RMSprop as Optimizer
 from torch.nn import SmoothL1Loss as Loss
 from torch.nn.functional import relu
-
-# TODO: Add comments
 # TODO: Combine with catch-me
 # TODO: Convert main to function with hyper parameters
 # TODO: Add run-me.py to run all
@@ -256,82 +258,224 @@ class CatchMeBoard(Board2D):
         self._draw(screen_height)
 
 
+class ReplayMemory:
+    """Replay memory stores transitions"""
+    _capacity: int                          # maximal memory capacity
+    _memory: List[Union[Transition, None]]  # list of memory elements
+    _index: int                             # cyclic counter that points to next memory index to fill
+
+    def __init__(self, capacity: int):
+        self._capacity = capacity
+        self._memory = []
+        self._index = 0
+
+    def __len__(self):
+        return len(self._memory)
+
+    def random(self, batch_size: int) -> Optional[List[Transition]]:
+        """
+        get random batch of transitions
+        :param batch_size: number of transitions to pass
+        :return: batch of transitions
+        """
+        # return requested batch of transitions if memory already contains enough transitions
+        return sample(self._memory, batch_size) if len(self) >= batch_size else None
+
+    def last(self, batch_size: int) -> Optional[List[Transition]]:
+        """
+        get last, ordered batch of transitions
+        :param batch_size: number of transitions to pass
+        :return: batch of transitions
+        """
+        # wrap around verification
+        index = 0 if self._index >= batch_size else self._index
+        # return requested batch of transitions if memory already contains enough transitions
+        return self._memory[-(batch_size - index):] + self._memory[:index] if len(self) >= batch_size else None
+
+    def push(self, transition: Transition) -> None:
+        """
+        push element to the replay memory
+        :param transition: transition
+        """
+        # enlarge memory if it isn't at maximal capacity
+        if len(self) < self._capacity:
+            self._memory.append(None)
+        self._memory[self._index] = transition
+        # enlarge index & wrap around
+        self._index = (self._index + 1) % self._capacity
+
+
+class DQN(Module):
+    def __init__(self, inputs: int = 25, hidden_depth: int = 1, hidden_dim: int = 16, outputs: int = 5):
+        """
+        :param inputs: input layer dimension
+        :param hidden_depth: number of hidden layers
+        :param hidden_dim: hidden layer dimension
+        :param outputs: output layer dimension
+        """
+        super(DQN, self).__init__()
+        # linear input layer
+        self._input = Linear(inputs, hidden_dim)
+        # list of batch normalizations for hidden layers
+        self._hidden_B = ModuleList([BatchNorm1d(hidden_dim) for _ in range(hidden_depth)])
+        # list of linear hidden layers
+        self._hidden_L = ModuleList([Linear(hidden_dim, hidden_dim) for _ in range(hidden_depth)])
+        # linear output layer
+        self._output = Linear(hidden_dim, outputs)
+
+    def forward(self, x):
+        x = relu(self._input(x.view(x.size(0), -1)))
+        # noinspection PyTypeChecker
+        for batch_norm, linear in zip(self._hidden_B, self._hidden_L):
+            x = relu(batch_norm(linear(x)))
+        return self._output(x)
+
+
+class Epsilon:
+    # TODO: Add comments to Epsilon Class
+    def __init__(self, max_epochs, p_random=.01, p_greedy=.50, greedy_min=1e-6):
+        self._random = round(p_random * max_epochs)
+        self._greedy = round(p_greedy * max_epochs)
+        self._max_epochs = max_epochs - self._random - self._greedy
+        self._greedy_min = greedy_min
+        self._count = 0
+        self.epsilon = 1
+
+    def step(self):
+        if self._random <= self._count < self._max_epochs + self._random:
+            self.epsilon = 1 - (self._count - self._random) ** 2 / self._max_epochs ** 2
+        elif self._count > self._max_epochs + self._random:
+            self.epsilon = self._greedy_min
+        self._count += 1
+        return self.epsilon
+
+
 class Policy:
     """player's action policy for any state"""
-    _actions: range  # available range of actions
+    _memory: ReplayMemory   # cyclic memory block to store transitions history
+    _gamma: float           # discount factor
+    epsilon: float         # exploration/exploitation percent {0.0 ... 1.0}, 0 == greedy
+    _actions: range         # available range of actions
+    _net: DQN               # neural network network, computes V(s_t) expected values of actions for given state
+    _optimizer: Optimizer   # optimizer function
+    _loss: Loss             # loss function
+    _acc_loss: float       # accumulated loss value
+    _counts: int            # accumulated loss epoch counter
 
-    def __init__(self, memory_size, gamma=0.9, epsilon=0):
-        self.memory = ReplayMemory(memory_size)
-        self.gamma = gamma
+    def __init__(self, memory_size: int, gamma: float = 0.9, epsilon: float = 0):
+        """
+        :param memory_size: maximal memory capacity
+        :param gamma: discount factor, determines the importance of future rewards
+        :param epsilon: initial exploration/exploitation percent {0.0 ... 1.0}, 0 == greedy
+        """
+        self._memory = ReplayMemory(memory_size)
+        self._gamma = gamma
         self.epsilon = epsilon
-        self.net = None
-        self.optimizer = None
-        self.loss = Loss()
-        self._rolling_loss = 0
+        self._loss = Loss()
+        self._acc_loss = 0
         self._counts = 0
 
-    def set_world_properties(self, n_actions: int, size: int):
+    def set_world_properties(self, n_actions: int, size: int) -> None:
+        """
+        initiate parameters that depend on world parameters
+        :param n_actions: available number of actions
+        :param size: board size
+        """
+        # set action range
         self._actions = range(n_actions)
-        self.net = DQN(inputs=size, outputs=n_actions)
+        # initiate neural network network, computes V(s_t) expected values of actions for given state
+        self._net = DQN(inputs=size, outputs=n_actions)
+        # set optimizer
         # noinspection PyUnresolvedReferences
-        self.optimizer = Optimizer(self.net.parameters())
+        self._optimizer = Optimizer(self._net.parameters())
 
-    def optimize(self, batch_size, random_batch=True):
-        transitions = self.memory.random(batch_size) if random_batch else self.memory.last(batch_size)
+    def push(self, transition: Transition) -> None:
+        """
+        push element to the policy replay memory
+        :param transition: transition
+        """
+        self._memory.push(transition)
+
+    def optimize(self, batch_size: int, random_batch: bool = True) -> None:
+        """
+        policy optimization step
+        :param batch_size: number of samples for current optimization step
+        :param random_batch: use random batch if true, else use last transitions batch
+        """
+        # load optimization batch, random or last batch
+        transitions = self._memory.random(batch_size) if random_batch else self._memory.last(batch_size)
+
         if transitions is not None:
+            # transpose the batch (https://stackoverflow.com/a/19343/3343043 for detailed explanation). this
+            # converts batch-array of transitions to transition of batch-arrays.
             batch = Transition(*zip(*transitions))
             curr_state_batch = stack(batch.curr_state)
             prev_state_batch = stack(batch.prev_state)
             last_action_batch = stack(batch.last_action).unsqueeze(1)
             reward_batch = stack(batch.reward).unsqueeze(1)
 
-            # Compute Q(s_t, a) - the model computes Q(s_t), then we select the columns of actions taken. These
+            # compute Q(s_t, a) - the model computes Q(s_t), then we select the columns of actions taken. these
             # are the actions which would've been taken for each batch state according to policy_net.
-            state_action_values = self.net(prev_state_batch).gather(1, last_action_batch)
+            state_action_values = self._net(prev_state_batch).gather(1, last_action_batch)
 
-            # Compute V(s_{t+1}) for all current states. Expected values of actions for curr_state_batch are
+            # compute V(s_{t+1}) for all current states. expected values of actions for curr_state_batch are
             # computed based on the policy_net; selecting their best reward with max(1)[0].
-            state_values = self.net(curr_state_batch).max(1)[0].unsqueeze(1).detach()
+            state_values = self._net(curr_state_batch).max(1)[0].unsqueeze(1).detach()
 
-            # Compute the expected Q values (target)
-            expected_state_action_values = (state_values * self.gamma) + reward_batch
+            # compute the expected Q values (target)
+            expected_state_action_values = (state_values * self._gamma) + reward_batch
 
-            # Compute Huber loss
-            loss = self.loss(state_action_values, expected_state_action_values)
-            self._rolling_loss += loss.detach()
+            # compute huber loss
+            loss = self._loss(state_action_values, expected_state_action_values)
+            self._acc_loss += loss.detach().item()
             self._counts += 1
 
-            # Optimize the model
-            self.optimizer.zero_grad()
+            # optimize the model
+            self._optimizer.zero_grad()
             loss.backward()
-            for param in self.net.parameters():
+            for param in self._net.parameters():
                 param.grad.data.clamp_(-1, 1)
-            self.optimizer.step()
+            self._optimizer.step()
 
-    def policy_function(self, state):
-        # Explore or Exploit
+    def policy_function(self, state: State) -> int:
+        # explore or exploit
         if self.epsilon > random():
+            # random action
             action = choice(self._actions)
         else:
-            self.net.eval()
-            action = self.net(state.unsqueeze(0)).max(1)[1].detach()
-            self.net.train()
+            self._net.eval()    # set to eval() mode, because of batch normalization
+            action = self._net(state.unsqueeze(0)).max(1)[1].detach()   # Q(s_t,a) best action for given state
+            self._net.train()   # set to train() mode, for optimization
 
         return action
 
-    def save(self, path):
-        save(self.net.state_dict(), path)
+    def save(self, path: str) -> None:
+        """
+        save neural network state dictionary
+        :param path: full path for state dictionary file
+        """
+        save(self._net.state_dict(), path)
 
-    def load(self, path):
-        self.net.load_state_dict(load(path))
-        self.net.eval()
+    def load(self, path: str) -> None:
+        """
+        load neural network state dictionary
+        :param path: full path for state dictionary file
+        """
+        self._net.load_state_dict(load(path))
+        self._net.eval()
 
-    def rolling_loss(self, reset=True):
-        rolling_loss = self._rolling_loss / self._counts if not self._counts == 0 else None
+    def mean_loss(self, reset: bool = True) -> float:
+        """
+        calculate mean loss for last epochs
+        :param reset: reset accumulated loss & epoch counter
+        :return: mean loss value
+        """
+        # calculate mean loss if epoch counter not zero
+        mean_loss = self._acc_loss / self._counts if not self._counts == 0 else None
         if reset:
-            self._rolling_loss = 0
+            self._acc_loss = 0
             self._counts = 0
-        return rolling_loss
+        return mean_loss
 
 
 class World:
@@ -563,91 +707,9 @@ class World:
         return not self._game_over()
 
 
-class ReplayMemory:
-    """Replay memory stores transitions"""
-    _capacity: int                          # maximal memory capacity
-    _memory: List[Union[Transition, None]]  # list of memory elements
-    _index: int                             # cyclic counter that points to next memory index to fill
-
-    def __init__(self, capacity: int):
-        self._capacity = capacity
-        self._memory = []
-        self._index = 0
-
-    def __len__(self):
-        return len(self._memory)
-
-    def random(self, batch_size: int) -> Optional[List[Transition]]:
-        """
-        get random batch of transitions
-        :param batch_size: number of transitions to pass
-        :return: batch of transitions
-        """
-        # return requested batch of transitions if memory already contains enough transitions
-        return sample(self._memory, batch_size) if len(self) >= batch_size else None
-
-    def last(self, batch_size: int) -> Optional[List[Transition]]:
-        """
-        get last, ordered batch of transitions
-        :param batch_size: number of transitions to pass
-        :return: batch of transitions
-        """
-        # wrap around verification
-        index = 0 if self._index >= batch_size else self._index
-        # return requested batch of transitions if memory already contains enough transitions
-        return self._memory[-(batch_size - index):] + self._memory[:index] if len(self) >= batch_size else None
-
-    def push(self, transition: Transition) -> None:
-        """
-        push element to the replay memory
-        :param transition: transition
-        """
-        # enlarge memory if it isn't at maximal capacity
-        if len(self) < self._capacity:
-            self._memory.append(None)
-        self._memory[self._index] = transition
-        # enlarge index & wrap around
-        self._index = (self._index + 1) % self._capacity
-
-
-class DQN(Module):
-    def __init__(self, inputs=25, hidden_depth=1, hidden_dim=16, outputs=5):
-        super(DQN, self).__init__()
-        self._input = Linear(inputs, hidden_dim)
-
-        self._hidden_B = ModuleList([BatchNorm1d(hidden_dim) for _ in range(hidden_depth)])
-        self._hidden_L = ModuleList([Linear(hidden_dim, hidden_dim) for _ in range(hidden_depth)])
-        self._output = Linear(hidden_dim, outputs)
-
-    def forward(self, x):
-        x = relu(self._input(x.view(x.size(0), -1)))
-        # noinspection PyTypeChecker
-        for batch_norm, linear in zip(self._hidden_B, self._hidden_L):
-            x = relu(batch_norm(linear(x)))
-        return self._output(x)
-
-
-class Epsilon:
-    # TODO: Add comments to Epsilon Class
-    def __init__(self, max_epochs, p_random=.01, p_greedy=.50, greedy_min=1e-6):
-        self._random = round(p_random * max_epochs)
-        self._greedy = round(p_greedy * max_epochs)
-        self._max_epochs = max_epochs - self._random - self._greedy
-        self._greedy_min = greedy_min
-        self._count = 0
-        self.epsilon = 1
-
-    def step(self):
-        if self._random <= self._count < self._max_epochs + self._random:
-            self.epsilon = 1 - (self._count - self._random) ** 2 / self._max_epochs ** 2
-        elif self._count > self._max_epochs + self._random:
-            self.epsilon = self._greedy_min
-        self._count += 1
-        return self.epsilon
-
-
 if __name__ == '__main__':
-    MAX_EPOCHS = 1500
+    # TODO: Add comments
+    MAX_EPOCHS = 150000
     PRINT_NUM = 100
     GAMMA = 0.999
     MEMORY_SIZE = 128
@@ -659,19 +721,19 @@ if __name__ == '__main__':
     plot_loss = Plot(MAX_EPOCHS, title='Loss vs Epoch', ylabel='Loss', figure_num=2,
                      rolling={'method': 'mean', 'N': PRINT_NUM})
 
-    eps = Epsilon(max_epochs=MAX_EPOCHS, p_random=0.1, p_greedy=0.1, greedy_min=1e-4)
+    eps = Epsilon(max_epochs=MAX_EPOCHS, p_random=0.5, p_greedy=0.01, greedy_min=1e-4)
     policy = Policy(MEMORY_SIZE, GAMMA, eps.epsilon)
     world = World(policy)
 
     tictoc = TicToc(MAX_EPOCHS)
     for epoch in range(MAX_EPOCHS):
-        while world.play(silent=True, smart_enemy=False):
-            policy.memory.push(world.transition())
-        policy.memory.push(world.transition())
+        while world.play(silent=True, smart_enemy=True):
+            policy.push(world.transition())
+        policy.push(world.transition())
         policy.optimize(BATCH_SIZE, random_batch=True)
         plot.update(epoch, world.step_num())
         plot_epsilon.update(epoch, policy.epsilon)
-        plot_loss.update(epoch, policy.rolling_loss())
+        plot_loss.update(epoch, policy.mean_loss())
         if (epoch + 1) % PRINT_NUM == 0:
             tictoc.toc()
             print('Epoch %7d;' % (epoch + 1), 'Step count: %5d;' % plot.roll[epoch],
