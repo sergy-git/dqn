@@ -14,6 +14,7 @@ from torch.optim import RMSprop as Optimizer
 from torch.nn import SmoothL1Loss as Loss
 from torch.nn.functional import relu
 # TODO: Combine with catch-me
+# TODO: Use cuda for dnn
 # TODO: Convert main to function with hyper parameters
 # TODO: Add run-me.py to run all
 # TODO: (optional) Add .json file for settings

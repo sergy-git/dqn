@@ -2,6 +2,7 @@
   <dictionary name="sergy">
     <words>
       <w>conv</w>
+      <w>cuda</w>
       <w>dqnv</w>
       <w>dtype</w>
       <w>optim</w>
