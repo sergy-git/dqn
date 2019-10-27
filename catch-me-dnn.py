@@ -332,45 +332,63 @@ class DQN(Module):
 
 
 class Epsilon:
-    # TODO: Add comments to Epsilon Class
-    def __init__(self, max_epochs, p_random=.01, p_greedy=.50, greedy_min=1e-6):
+    _random: int         # number of exploration epochs at the beginning
+    _greedy: int         # number of exploitation epochs at the end
+    _max_epochs: int     # maximal epochs, decay algorithm finish with greedy policy
+    _explore_min: float  # minimal exploration percent, 0 == greedy
+    _item: float         # epsilon current value
+
+    def __init__(self, max_epochs, p_random=.01, p_greedy=.50, explore_min=1e-6):
+        """
+        :param max_epochs: maximal epochs, decay algorithm finish with greedy policy
+        :param p_random: percent of exploration epochs at the beginning
+        :param p_greedy: percent of exploitation epochs at the end
+        :param explore_min: minimal exploration percent, 0 == greedy
+        """
         self._random = round(p_random * max_epochs)
         self._greedy = round(p_greedy * max_epochs)
         self._max_epochs = max_epochs - self._random - self._greedy
-        self._greedy_min = greedy_min
-        self._count = 0
-        self.epsilon = 1
+        self._explore_min = explore_min
+        self._item = 1  # starting exploration percent is 100%
 
-    def step(self):
-        if self._random <= self._count < self._max_epochs + self._random:
-            self.epsilon = 1 - (self._count - self._random) ** 2 / self._max_epochs ** 2
-        elif self._count > self._max_epochs + self._random:
-            self.epsilon = self._greedy_min
-        self._count += 1
-        return self.epsilon
+    def decay(self, curr_epoch):
+        """
+        epsilon decay algorithm, gradually change epsilon from 1 to 0 every epoch, 0 == greedy
+        :param curr_epoch: current epoch
+        """
+        if self._random <= curr_epoch < self._max_epochs + self._random:
+            self._item = 1 - (curr_epoch - self._random) ** 2 / self._max_epochs ** 2
+        elif curr_epoch > self._max_epochs + self._random:
+            self._item = self._explore_min
+
+    def item(self):
+        """return current epsilon value"""
+        return self._item
 
 
 class Policy:
     """player's action policy for any state"""
-    _memory: ReplayMemory   # cyclic memory block to store transitions history
-    _gamma: float           # discount factor
-    epsilon: float         # exploration/exploitation percent {0.0 ... 1.0}, 0 == greedy
-    _actions: range         # available range of actions
-    _net: DQN               # neural network network, computes V(s_t) expected values of actions for given state
-    _optimizer: Optimizer   # optimizer function
-    _loss: Loss             # loss function
-    _acc_loss: float       # accumulated loss value
-    _counts: int            # accumulated loss epoch counter
+    _memory: ReplayMemory    # cyclic memory block to store transitions history
+    _gamma: float            # discount factor
+    _epsilon_decay: Epsilon  # epsilon decay algorithm
+    _epsilon_value: float    # exploration/exploitation percent {0.0 ... 1.0}, 0 == greedy
+    _actions: range          # available range of actions
+    _net: DQN                # neural network network, computes V(s_t) expected values of actions for given state
+    _optimizer: Optimizer    # optimizer function
+    _loss: Loss              # loss function
+    _acc_loss: float         # accumulated loss value
+    _counts: int             # accumulated loss epoch counter
 
-    def __init__(self, memory_size: int, gamma: float = 0.9, epsilon: float = 0):
+    def __init__(self, memory_size: int, gamma: float = 0.9, epsilon: Optional[Epsilon] = None):
         """
         :param memory_size: maximal memory capacity
         :param gamma: discount factor, determines the importance of future rewards
-        :param epsilon: initial exploration/exploitation percent {0.0 ... 1.0}, 0 == greedy
+        :param epsilon: exploration/exploitation decay algorithm, gradually change epsilon from 1 to 0, 0 == greedy
         """
         self._memory = ReplayMemory(memory_size)
         self._gamma = gamma
-        self.epsilon = epsilon
+        self._epsilon_decay = epsilon
+        self._epsilon_value = self._epsilon_decay.item() if self._epsilon_decay is not None else 0  # greedy if None
         self._loss = Loss()
         self._acc_loss = 0
         self._counts = 0
@@ -395,6 +413,22 @@ class Policy:
         :param transition: transition
         """
         self._memory.push(transition)
+
+    def epsilon_decay(self, curr_epoch):
+        """
+        update epsilon value according to decay algorithm
+        :param curr_epoch: current epoch
+        """
+        self._epsilon_decay.decay(curr_epoch)
+        self._epsilon_value = self._epsilon_decay.item()
+
+    def set_greedy(self):
+        """set exploitation policy, greedy"""
+        self._epsilon_value = 0
+
+    def eps(self):
+        """get epsilon value"""
+        return self._epsilon_value
 
     def optimize(self, batch_size: int, random_batch: bool = True) -> None:
         """
@@ -439,7 +473,7 @@ class Policy:
 
     def policy_function(self, state: State) -> int:
         # explore or exploit
-        if self.epsilon > random():
+        if self._epsilon_value > random():
             # random action
             action = choice(self._actions)
         else:
@@ -708,50 +742,72 @@ class World:
 
 
 if __name__ == '__main__':
-    # TODO: Add comments
-    MAX_EPOCHS = 150000
-    PRINT_NUM = 100
-    GAMMA = 0.999
-    MEMORY_SIZE = 128
-    BATCH_SIZE = 64
-    NET_PATH = './mem/policy_net.pkl'
+    # set hyper parameters
+    MAX_EPOCHS = 150000                 # maximal training epochs numbers
+    PRINT_NUM = 100                     # print status every PRINT_NUM epochs
+    GAMMA = 0.999                       # discount factor
+    MEMORY_SIZE = 128                   # replay memory size
+    BATCH_SIZE = 64                     # random batch size
+    NET_PATH = './mem/policy_net.pkl'   # network save path
+    SMART_ENEMY = False                 # use enemy smart policy if true, else use random policy
+    RANDOM_BATCH = False                # use random batch if true, else use last transitions batch
 
-    plot = Plot(MAX_EPOCHS, rolling={'method': 'mean', 'N': PRINT_NUM}, figure_num=0)
+    # play game after training
+    play = False
+
+    # initiate graphs: number of steps per epoch, epsilon value per epoch, mean loss value per epoch
+    plot_steps = Plot(MAX_EPOCHS, rolling={'method': 'mean', 'N': PRINT_NUM}, figure_num=0)
     plot_epsilon = Plot(MAX_EPOCHS, title='Epsilon vs Epoch', ylabel='Epsilon', figure_num=1)
     plot_loss = Plot(MAX_EPOCHS, title='Loss vs Epoch', ylabel='Loss', figure_num=2,
                      rolling={'method': 'mean', 'N': PRINT_NUM})
 
-    eps = Epsilon(max_epochs=MAX_EPOCHS, p_random=0.5, p_greedy=0.01, greedy_min=1e-4)
-    policy = Policy(MEMORY_SIZE, GAMMA, eps.epsilon)
+    # initiate policy
+    policy = Policy(MEMORY_SIZE, GAMMA, Epsilon(max_epochs=MAX_EPOCHS, p_random=0.5, p_greedy=0.01, explore_min=1e-4))
+
+    # initiate world
     world = World(policy)
 
-    tictoc = TicToc(MAX_EPOCHS)
+    tictoc = TicToc(MAX_EPOCHS)  # start time counter
     for epoch in range(MAX_EPOCHS):
-        while world.play(silent=True, smart_enemy=True):
-            policy.push(world.transition())
-        policy.push(world.transition())
-        policy.optimize(BATCH_SIZE, random_batch=True)
-        plot.update(epoch, world.step_num())
-        plot_epsilon.update(epoch, policy.epsilon)
+        # perform world step until game is over, don't print board
+        while world.play(silent=True, smart_enemy=SMART_ENEMY):
+            policy.push(world.transition())  # save transition in memory
+        policy.push(world.transition())  # save game over transition in memory
+        policy.optimize(BATCH_SIZE, random_batch=RANDOM_BATCH)  # optimize policy
+
+        # update plots
+        plot_steps.update(epoch, world.step_num())
+        plot_epsilon.update(epoch, policy.eps())
         plot_loss.update(epoch, policy.mean_loss())
+
+        # print statistics every PRINT_NUM epochs
         if (epoch + 1) % PRINT_NUM == 0:
             tictoc.toc()
-            print('Epoch %7d;' % (epoch + 1), 'Step count: %5d;' % plot.roll[epoch],
+            print('Epoch %7d;' % (epoch + 1), 'Step count: %5d;' % plot_steps.roll[epoch],
                   'loss: %7.3f; ' % plot_loss.roll[epoch], 'eta (s): %6.2f; ' % tictoc.eta(epoch))
 
+        # update epsilon and reset players positions in world, if this is not last epoch
         if not epoch + 1 == MAX_EPOCHS:
-            policy.epsilon = eps.step()
-            world.reset()
+            policy.epsilon_decay(epoch)  # update exploration/exploitation percent using decay algorithm
+            world.reset()                # reset players in world
 
+    # save policy network
     policy.save(NET_PATH)
+
+    # summarize training: maximal steps all over the training and training total time
     tictoc.toc()
-    print('Max duration: %d;' % max(list(plot.roll.values())[-len(plot.roll) // 2:]),
+    print('Max duration: %d;' % max(list(plot_steps.roll.values())[-len(plot_steps.roll) // 2:]),
           'Elapsed %.2f (s)' % tictoc.elapsed())
-    plot.plot()
+
+    # plot graphs: number of steps per epoch, epsilon value per epoch, mean loss value per epoch
+    plot_steps.plot()
     plot_epsilon.plot()
     plot_loss.plot()
 
-    policy.epsilon = 0
-    world.reset()
-    while world.play(silent=False, smart_enemy=True):
-        pass
+    # play one game
+    if play:
+        policy.set_greedy()  # set greedy policy
+        world.reset()        # reset players in world
+        # perform world step and print board until game is over
+        while world.play(silent=False, smart_enemy=SMART_ENEMY):
+            pass
