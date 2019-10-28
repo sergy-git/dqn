@@ -9,10 +9,13 @@ from functools import reduce
 from time import sleep
 from typing import List, Tuple, Callable, Dict, TypeVar, NamedTuple, Union, Optional
 from torch import tensor, float, stack, save, load, Tensor
+from pickle import dump
+from pickle import load as p_load
 from torch.nn import Module, ModuleList, Linear, BatchNorm1d
 from torch.optim import RMSprop as Optimizer
 from torch.nn import SmoothL1Loss as Loss
 from torch.nn.functional import relu
+
 # TODO: Combine with catch-me
 # TODO: Use cuda for dnn
 # TODO: Convert main to function with hyper parameters
@@ -370,23 +373,29 @@ class Epsilon:
 class Policy:
     """player's action policy for any state"""
     _memory: ReplayMemory    # cyclic memory block to store transitions history
+    _batch_size: int         # number of samples for single optimization step, dnn only
     _gamma: float            # discount factor
     _epsilon_decay: Epsilon  # epsilon decay algorithm
     _epsilon_value: float    # exploration/exploitation percent {0.0 ... 1.0}, 0 == greedy
     _actions: range          # available range of actions
     _net: DQN                # neural network network, computes V(s_t) expected values of actions for given state
     _optimizer: Optimizer    # optimizer function
+    _q: dict                 # todo
+    _best_action: dict       # todo
     _loss: Loss              # loss function
     _acc_loss: float         # accumulated loss value
     _counts: int             # accumulated loss epoch counter
+    _dtype: str              # definition of state type, 'tuple' or 'tensor'
 
-    def __init__(self, memory_size: int, gamma: float = 0.9, epsilon: Optional[Epsilon] = None):
+    def __init__(self, memory_size: int, batch_size: int, gamma: float = 0.9, epsilon: Optional[Epsilon] = None):
         """
         :param memory_size: maximal memory capacity
+        :param batch_size: number of samples for single optimization step, dnn only
         :param gamma: discount factor, determines the importance of future rewards
         :param epsilon: exploration/exploitation decay algorithm, gradually change epsilon from 1 to 0, 0 == greedy
         """
         self._memory = ReplayMemory(memory_size)
+        self._batch_size = batch_size
         self._gamma = gamma
         self._epsilon_decay = epsilon
         self._epsilon_value = self._epsilon_decay.item() if self._epsilon_decay is not None else 0  # greedy if None
@@ -394,19 +403,28 @@ class Policy:
         self._acc_loss = 0
         self._counts = 0
 
-    def set_world_properties(self, n_actions: int, size: int) -> None:
+    def set_world_properties(self, n_actions: int, size: int, dtype: str) -> None:
         """
         initiate parameters that depend on world parameters
         :param n_actions: available number of actions
         :param size: board size
+        :param dtype: state data type, 'tuple' or 'tensor'
         """
         # set action range
         self._actions = range(n_actions)
-        # initiate neural network network, computes V(s_t) expected values of actions for given state
-        self._net = DQN(inputs=size, outputs=n_actions)
-        # set optimizer
-        # noinspection PyUnresolvedReferences
-        self._optimizer = Optimizer(self._net.parameters())
+
+        # set state data type
+        self._dtype = dtype
+
+        # initiate according to data type
+        if self._dtype is 'tensor':
+            # initiate neural network network, computes V(s_t) expected values of actions for given state
+            self._net = DQN(inputs=size, outputs=n_actions)
+            # set optimizer
+            # noinspection PyUnresolvedReferences
+            self._optimizer = Optimizer(self._net.parameters())
+        else:
+            raise ValueError("Unknown type %s." % self._dtype)
 
     def push(self, transition: Transition) -> None:
         """
@@ -431,14 +449,28 @@ class Policy:
         """get epsilon value"""
         return self._epsilon_value
 
-    def optimize(self, batch_size: int, random_batch: bool = True) -> None:
+    def optimize(self) -> None:
         """
         policy optimization step
-        :param batch_size: number of samples for current optimization step
-        :param random_batch: use random batch if true, else use last transitions batch
         """
-        # load optimization batch, random or last batch
-        transitions = self._memory.random(batch_size) if random_batch else self._memory.last(batch_size)
+        # return according to data type
+        if self._dtype is 'tensor':
+            return self._optimize_dnn(batch_size=self._batch_size)
+        elif self._dtype is 'tuple':
+            self._optimize_rlq(step_num=self._counts)
+        else:
+            raise ValueError("Unknown type %s." % self._dtype)
+
+    def _optimize_rlq(self, step_num: int):
+        pass
+
+    def _optimize_dnn(self, batch_size: int) -> None:
+        """
+        dnn based policy optimization step
+        :param batch_size: number of samples for current optimization step
+        """
+        # load random optimization batch
+        transitions = self._memory.random(batch_size)
 
         if transitions is not None:
             # transpose the batch (https://stackoverflow.com/a/19343/3343043 for detailed explanation). this
@@ -489,15 +521,29 @@ class Policy:
         save neural network state dictionary
         :param path: full path for state dictionary file
         """
-        save(self._net.state_dict(), path)
+        if self._dtype is 'tensor':
+            save(self._net.state_dict(), path)
+        elif self._dtype is 'tensor':
+            file = open(path, "wb")
+            dump(self._q, file)
+            file.close()
+        else:
+            raise ValueError("Unknown type %s." % self._dtype)
 
     def load(self, path: str) -> None:
         """
         load neural network state dictionary
         :param path: full path for state dictionary file
         """
-        self._net.load_state_dict(load(path))
-        self._net.eval()
+        if self._dtype is 'tensor':
+            self._net.load_state_dict(load(path))
+            self._net.eval()
+        elif self._dtype is 'tensor':
+            file = open(path, 'rb')
+            self._q = p_load(file)
+            file.close()
+        else:
+            raise ValueError("Unknown type %s." % self._dtype)
 
     def mean_loss(self, reset: bool = True) -> float:
         """
@@ -546,7 +592,7 @@ class World:
         # set player's movement policy
         self._policy = player_policy.policy_function
         # update world parameters in policy
-        policy.set_world_properties(len(self._actions), n * m)
+        policy.set_world_properties(len(self._actions), n * m, self._dtype)
         # set x & y axis ranges
         self._rx = range(n)
         self._ry = range(m)
@@ -744,14 +790,14 @@ class World:
 
 if __name__ == '__main__':
     # set hyper parameters
-    MAX_EPOCHS = 150000                 # maximal training epochs numbers
+    MAX_EPOCHS = 15000                  # maximal training epochs numbers
     PRINT_NUM = 100                     # print status every PRINT_NUM epochs
+    ALPHA = 0.5                         # learning rate (for Q-Learning only)
     GAMMA = 0.999                       # discount factor
     MEMORY_SIZE = 128                   # replay memory size
     BATCH_SIZE = 64                     # random batch size
     NET_PATH = './mem/policy_net.pkl'   # network save path
-    SMART_ENEMY = False                 # use enemy smart policy if true, else use random policy
-    RANDOM_BATCH = False                # use random batch if true, else use last transitions batch
+    SMART_ENEMY = True                  # use enemy smart policy if true, else use random policy
 
     # play game after training
     play = False
@@ -763,7 +809,8 @@ if __name__ == '__main__':
                      rolling={'method': 'mean', 'N': PRINT_NUM})
 
     # initiate policy
-    policy = Policy(MEMORY_SIZE, GAMMA, Epsilon(max_epochs=MAX_EPOCHS, p_random=0.5, p_greedy=0.01, explore_min=1e-4))
+    policy = Policy(MEMORY_SIZE, BATCH_SIZE, GAMMA,
+                    Epsilon(max_epochs=MAX_EPOCHS, p_random=0.5, p_greedy=0.01, explore_min=1e-4))
 
     # initiate world
     world = World(policy)
@@ -774,7 +821,9 @@ if __name__ == '__main__':
         while world.play(silent=True, smart_enemy=SMART_ENEMY):
             policy.push(world.transition())  # save transition in memory
         policy.push(world.transition())  # save game over transition in memory
-        policy.optimize(BATCH_SIZE, random_batch=RANDOM_BATCH)  # optimize policy
+
+        # optimize policy
+        policy.optimize()
 
         # update plots
         plot_steps.update(epoch, world.step_num())
