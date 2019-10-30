@@ -292,9 +292,14 @@ class ReplayMemory:
         :return: batch of transitions
         """
         # wrap around verification
-        index = 0 if self._index >= batch_size else self._index
+        index = 0 if self._index >= batch_size else self._index???
         # return requested batch of transitions if memory already contains enough transitions
-        return self._memory[-(batch_size - index):] + self._memory[:index] if len(self) >= batch_size else None
+        res = self._memory[-(batch_size - index):] + self._memory[:index] if len(self) >= batch_size else None
+        if res is not None:
+            b = Transition(*zip(*res))
+            if not b.reward[-1] == -2:
+                print('WoW')
+        return res
 
     def push(self, transition: Transition) -> None:
         """
@@ -469,6 +474,13 @@ class Policy:
         else:
             raise ValueError("Unknown type %s." % self._dtype)
 
+    def push_q(self, state):
+        if state not in self._q.keys():
+            self._q.update({state: {}})
+            self._best_action.update({state: {'action': 0, 'value': 0}})
+            for action in self._actions:
+                self._q[state].update({action: 0})
+
     def _optimize_rlq(self, step_num: int) -> None:
         """
         q-learning based policy optimization step
@@ -478,17 +490,15 @@ class Policy:
         transitions = self._memory.last(step_num)
 
         if transitions is not None:
+            b = Transition(*zip(*transitions))
+            print(b.reward[-1])
+
             for transition in transitions:
                 prev_state, last_action, curr_state, reward = transition
-                # self.validate(curr_state)
-                if curr_state not in self._q.keys():
-                    self._q.update({curr_state: {}})
-                    self._best_action.update({curr_state: {'action': last_action, 'value': 0}})
-                    for action in self._actions:
-                        self._q[curr_state].update({action: 0})
+                self.push_q(curr_state)
 
                 target = reward + self._gamma * self._best_action[curr_state]['value']
-              ??  error = target - self._q[prev_state][last_action]
+                error = target - self._q[prev_state][last_action]
                 self._q[prev_state][last_action] += self._alpha * error
                 self._acc_loss += error
                 self._counts += 1
@@ -738,6 +748,10 @@ class World:
         self._last_action = (0, 0)
         self._reward = 0
 
+        # policy initial params
+        policy.push(self.transition())  # save start transition in memory
+        policy.push_q(self._curr_state)  # set state_0
+
     def step_num(self) -> int:
         """
         get number of steps in current play
@@ -855,7 +869,6 @@ if __name__ == '__main__':
 
     tictoc = TicToc(MAX_EPOCHS)  # start time counter
     for epoch in range(MAX_EPOCHS):
-        policy.push(world.transition())  # save start transition in memory
         # perform world step until game is over, don't print board
         while world.play(silent=True, smart_enemy=SMART_ENEMY):
             policy.push(world.transition())  # save transition in memory
