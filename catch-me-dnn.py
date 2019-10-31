@@ -16,7 +16,6 @@ from torch.optim import RMSprop as Optimizer
 from torch.nn import SmoothL1Loss as Loss
 from torch.nn.functional import relu
 
-# TODO: Combine with catch-me
 # TODO: Use cuda for dnn
 # TODO: Convert main to function with hyper parameters
 # TODO: Add run-me.py to run all
@@ -291,10 +290,15 @@ class ReplayMemory:
         :param batch_size: number of transitions to pass
         :return: batch of transitions
         """
+        if len(self) >= batch_size:
+            if batch_size > self._index:
+                res = self._memory[-(batch_size - self._index):] + self._memory[:self._index]
+            else:
+                res = self._memory[(self._index - batch_size):self._index]
+        else:
+            res = None
         # wrap around verification
-        index = 0 if self._index >= batch_size else self._index???
         # return requested batch of transitions if memory already contains enough transitions
-        res = self._memory[-(batch_size - index):] + self._memory[:index] if len(self) >= batch_size else None
         if res is not None:
             b = Transition(*zip(*res))
             if not b.reward[-1] == -2:
@@ -387,7 +391,7 @@ class Policy:
     _net: DQN                # neural network network, computes V(s_t) expected values of actions for given state
     _optimizer: Optimizer    # optimizer function
     _q: dict                 # todo
-    _best_action: dict       # todo
+    _best_action: dict       # best action for each state
     _loss: Loss              # loss function
     _acc_loss: float         # accumulated loss value
     _counts: int             # accumulated loss epoch counter
@@ -490,9 +494,6 @@ class Policy:
         transitions = self._memory.last(step_num)
 
         if transitions is not None:
-            b = Transition(*zip(*transitions))
-            print(b.reward[-1])
-
             for transition in transitions:
                 prev_state, last_action, curr_state, reward = transition
                 self.push_q(curr_state)
@@ -558,7 +559,12 @@ class Policy:
                 action = self._net(state.unsqueeze(0)).max(1)[1].detach()   # Q(s_t,a) best action for given state
                 self._net.train()   # set to train() mode, for optimization
             elif self._dtype is 'tuple':
-                action = self._best_action[state]['action']                 # Q(s_t,a) best action for given state
+                if state in self._best_action.keys():
+                    # Q(s_t,a) best action for given state
+                    action = self._best_action[state]['action']
+                else:
+                    # random action
+                    action = choice(self._actions)
             else:
                 raise ValueError("Unknown type %s." % self._dtype)
 
@@ -571,7 +577,7 @@ class Policy:
         """
         if self._dtype is 'tensor':
             save(self._net.state_dict(), path)
-        elif self._dtype is 'tensor':
+        elif self._dtype is 'tuple':
             file = open(path, "wb")
             dump(self._q, file)
             file.close()
@@ -611,11 +617,10 @@ class World:
     """world properties description: 2D board, actors (player and enemies) and player's next move strategy"""
     # definition of available set of actions
     _actions = ((0, 0), (0, 1), (1, 0), (0, -1), (-1, 0))
-    # definition of state type, 'tuple' or 'tensor'
-    _dtype = 'tuple'  # todo !!!
 
     _action_index: Dict[Action, int]    # LUT - converts action to index
     _policy: Callable[[State], int]     # policy function that return player's action_index for given state
+    _dtype: str                         # definition of state type, 'tuple' or 'tensor'
     _rx: range                          # range of indexes along x-axis, width
     _ry: range                          # range of indexes along y-axis, height
     _player: Actor                      # pointer to player object
@@ -628,9 +633,10 @@ class World:
     _curr_state: State                  # current state
     _reward: int                        # immediate reward value
 
-    def __init__(self, player_policy: Policy, n: int = 5, m: int = 5, n_enemies: int = 2):
+    def __init__(self, player_policy: Policy, dtype: str, n: int = 5, m: int = 5, n_enemies: int = 2):
         """
         :param player_policy: policy function that return player's action_index for given state
+        :param dtype: definition of state type, 'tuple' or 'tensor'
         :param n: number of cells along x-axis, width
         :param m: number of cells along y-axis, height
         :param n_enemies: number of enemies
@@ -639,6 +645,8 @@ class World:
         self._action_index = {self._actions[index]: index for index in range(len(self._actions))}
         # set player's movement policy
         self._policy = player_policy.policy_function
+        # set state type
+        self._dtype = dtype
         # update world parameters in policy
         policy.set_world_properties(len(self._actions), n * m, self._dtype)
         # set x & y axis ranges
@@ -842,17 +850,21 @@ class World:
 
 if __name__ == '__main__':
     # set hyper parameters
-    MAX_EPOCHS = 15000                  # maximal training epochs numbers
-    PRINT_NUM = 100                     # print status every PRINT_NUM epochs
+    MAX_EPOCHS = 1500000                # maximal training epochs numbers
+    PRINT_NUM = 10000                   # print status every PRINT_NUM epochs
     ALPHA = 0.5                         # learning rate (for Q-Learning only)
     GAMMA = 0.999                       # discount factor
     MEMORY_SIZE = 128                   # replay memory size
     BATCH_SIZE = 64                     # random batch size
     NET_PATH = './mem/policy_net.pkl'   # network save path
-    SMART_ENEMY = False                 # use enemy smart policy if true, else use random policy
+    SMART_ENEMY = True                  # use enemy smart policy if true, else use random policy
+    EPS_RANDOM = 0.1                    # percent of exploration epochs at the beginning
+    EPS_GREEDY = 0.1                    # percent of exploitation epochs at the end
+    EPS_MIN = 0.                        # minimal exploration percent, 0 == greedy
+    STATE_TYPE = 'tuple'
 
     # play game after training
-    play = False
+    play = True
 
     # initiate graphs: number of steps per epoch, epsilon value per epoch, mean loss value per epoch
     plot_steps = Plot(MAX_EPOCHS, rolling={'method': 'mean', 'N': PRINT_NUM}, figure_num=0)
@@ -862,10 +874,10 @@ if __name__ == '__main__':
 
     # initiate policy
     policy = Policy(MEMORY_SIZE, BATCH_SIZE, ALPHA, GAMMA,
-                    Epsilon(max_epochs=MAX_EPOCHS, p_random=0.5, p_greedy=0.01, explore_min=1e-4))
+                    Epsilon(max_epochs=MAX_EPOCHS, p_random=EPS_RANDOM, p_greedy=EPS_GREEDY, explore_min=EPS_MIN))
 
     # initiate world
-    world = World(policy)
+    world = World(policy, STATE_TYPE)
 
     tictoc = TicToc(MAX_EPOCHS)  # start time counter
     for epoch in range(MAX_EPOCHS):
@@ -875,7 +887,7 @@ if __name__ == '__main__':
         policy.push(world.transition())  # save game over transition in memory
 
         # optimize policy
-        policy.optimize(BATCH_SIZE if world._dtype is 'tensor' else world.step_num())
+        policy.optimize(BATCH_SIZE if STATE_TYPE is 'tensor' else world.step_num())
 
         # update plots
         plot_steps.update(epoch, world.step_num())
