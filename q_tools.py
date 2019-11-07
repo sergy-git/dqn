@@ -4,7 +4,7 @@ from statistics import mean
 
 
 class Plot:
-    def __init__(self, max_len, rolling=None, title='Training...', xlabel='Epoch', ylabel='Duration', figure_num = 0):
+    def __init__(self, max_len, rolling=None, title='Training...', xlabel='Epoch', ylabel='Duration', figure_num=0):
         self.line = {n: None for n in range(max_len)}
         self._title = title
         self._xlabel = xlabel

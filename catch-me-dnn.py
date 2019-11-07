@@ -8,10 +8,11 @@ from math import copysign
 from functools import reduce
 from time import sleep
 from typing import List, Tuple, Callable, Dict, TypeVar, NamedTuple, Union, Optional
-from torch import device, cuda, tensor, float, stack, save, load, Tensor
+from torch import device, tensor, float, stack, save, load, Tensor
 from pickle import dump
 from pickle import load as p_load
 from torch.nn import Module, ModuleList, Linear, BatchNorm1d
+# noinspection PyUnresolvedReferences
 from torch.optim import RMSprop as Optimizer
 from torch.nn import SmoothL1Loss as Loss
 from torch.nn.functional import relu
@@ -21,6 +22,7 @@ from torch.nn.functional import relu
 # TODO: (optional) Add .json file for settings
 
 # use gpu if there is cuda device
+# from torch import cuda
 # dev = device('cuda' if cuda.is_available() else 'cpu')
 
 # force cpu
@@ -437,6 +439,7 @@ class Policy:
         # initiate according to data type
         if self._dtype is 'tensor':
             # initiate neural network network, computes V(s_t) expected values of actions for given state
+            # noinspection PyUnresolvedReferences
             self._net = DQN(inputs=size, outputs=n_actions).to(device=dev)
             # set optimizer
             # noinspection PyUnresolvedReferences
@@ -856,8 +859,8 @@ class World:
 
 if __name__ == '__main__':
     # set hyper parameters
-    MAX_EPOCHS = 15000                  # maximal training epochs numbers
-    PRINT_NUM = 1000                    # print status every PRINT_NUM epochs
+    MAX_EPOCHS = 1500                   # maximal training epochs numbers
+    PRINT_NUM = 100                     # print status every PRINT_NUM epochs
     ALPHA = 0.5                         # learning rate (for Q-Learning only)
     GAMMA = 0.999                       # discount factor
     MEMORY_SIZE = 128                   # replay memory size
