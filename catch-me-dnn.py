@@ -859,8 +859,8 @@ class World:
 
 if __name__ == '__main__':
     # set hyper parameters
-    MAX_EPOCHS = 1500                   # maximal training epochs numbers
-    PRINT_NUM = 100                     # print status every PRINT_NUM epochs
+    MAX_EPOCHS = 15000                  # maximal training epochs numbers
+    PRINT_NUM = 1000                    # print status every PRINT_NUM epochs
     ALPHA = 0.5                         # learning rate (for Q-Learning only)
     GAMMA = 0.999                       # discount factor
     MEMORY_SIZE = 128                   # replay memory size
