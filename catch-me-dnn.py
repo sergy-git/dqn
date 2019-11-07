@@ -17,8 +17,6 @@ from torch.optim import RMSprop as Optimizer
 from torch.nn import SmoothL1Loss as Loss
 from torch.nn.functional import relu
 
-# TODO: Convert main to function with hyper parameters
-# TODO: Add run-me.py to run all
 # TODO: (optional) Add .json file for settings
 
 # use gpu if there is cuda device
@@ -397,7 +395,7 @@ class Policy:
     _actions: range          # available range of actions
     _net: DQN                # neural network network, computes V(s_t) expected values of actions for given state
     _optimizer: Optimizer    # optimizer function
-    _q: dict                 # todo
+    _q: dict                 # Table for each action value at every state Q(s_t, a)
     _best_action: dict       # best action for each state
     _loss: Loss              # loss function
     _acc_loss: float         # accumulated loss value
@@ -487,6 +485,19 @@ class Policy:
             raise ValueError("Unknown type %s." % self._dtype)
 
     def push_q(self, state):
+        """
+        add new state to q_table
+        :param state: world state - board image, when every pixel is cell
+        """
+        # verify that type requires q-table update
+        if self._dtype is 'tuple':
+            self._push_q(state)
+
+    def _push_q(self, state):
+        """
+        add new state to q_table
+        :param state: world state - board image, when every pixel is cell
+        """
         if state not in self._q.keys():
             self._q.update({state: {}})
             self._best_action.update({state: {'action': 0, 'value': 0}})
@@ -504,7 +515,7 @@ class Policy:
         if transitions is not None:
             for transition in transitions:
                 prev_state, last_action, curr_state, reward = transition
-                self.push_q(curr_state)
+                self._push_q(curr_state)
 
                 target = reward + self._gamma * self._best_action[curr_state]['value']
                 error = target - self._q[prev_state][last_action]
@@ -656,14 +667,14 @@ class World:
         # set state type
         self._dtype = dtype
         # update world parameters in policy
-        policy.set_world_properties(len(self._actions), n * m, self._dtype)
+        player_policy.set_world_properties(len(self._actions), n * m, self._dtype)
         # set x & y axis ranges
         self._rx = range(n)
         self._ry = range(m)
         # initiate n_actors at (0, 0) position
         self._init_actors(n_enemies)
         # reset actors to random positions
-        self.reset()
+        self.reset(player_policy)
         # set board object at size n, m and link actors to board
         self._board = CatchMeBoard(n, m, self._actors)
 
@@ -744,8 +755,11 @@ class World:
         x, y = position
         return x in self._rx and y in self._ry
 
-    def reset(self) -> None:
-        """reset world parameters: clear step counter, set actors to random positions and evaluate initial transition"""
+    def reset(self, player_policy: Policy) -> None:
+        """
+        reset world parameters: clear step counter, set actors to random positions and evaluate initial transition
+        :param player_policy: player's action policy for any state
+        """
         # clear step counter
         self._step_count = 0
 
@@ -765,9 +779,11 @@ class World:
         self._reward = 0
 
         # policy initial params
-        policy.push(self.transition())  # save start transition in memory
-        if self._dtype is 'tuple':
-            policy.push_q(self._curr_state)  # set state_0
+        player_policy.push(self.transition())    # save start transition in memory
+        player_policy.push_q(self.curr_state())  # save state_0 to q-table
+
+    def dtype(self):
+        return self._dtype
 
     def step_num(self) -> int:
         """
@@ -858,79 +874,102 @@ class World:
 
 
 if __name__ == '__main__':
-    # set hyper parameters
-    MAX_EPOCHS = 15000                  # maximal training epochs numbers
-    PRINT_NUM = 1000                    # print status every PRINT_NUM epochs
-    ALPHA = 0.5                         # learning rate (for Q-Learning only)
-    GAMMA = 0.999                       # discount factor
-    MEMORY_SIZE = 128                   # replay memory size
-    BATCH_SIZE = 64                     # random batch size
-    NET_PATH = './mem/policy_net.pkl'   # network save path
-    SMART_ENEMY = True                  # use enemy smart policy if true, else use random policy
-    EPS_RANDOM = 0.1                    # percent of exploration epochs at the beginning
-    EPS_GREEDY = 0.1                    # percent of exploitation epochs at the end
-    EPS_MIN = 0.                        # minimal exploration percent, 0 == greedy
-    STATE_TYPE = 'tensor'
+
+    def training(max_epochs, print_num, alpha, gamma, memory_size, batch_size, net_path, smart_enemy,
+                 eps_rand, eps_greedy, eps_min, state_type):
+        """
+        training routine
+        :param max_epochs: maximal training epochs numbers
+        :param print_num: print status every PRINT_NUM epochs
+        :param alpha: learning rate (for Q-Learning only)
+        :param gamma: discount factor
+        :param memory_size: replay memory size
+        :param batch_size: random batch size
+        :param net_path: network save path
+        :param smart_enemy: use enemy smart policy if true, else use random policy
+        :param eps_rand: percent of exploration epochs at the beginning
+        :param eps_greedy: percent of exploitation epochs at the end
+        :param eps_min: minimal exploration percent, 0 == greedy
+        :param state_type: definition of state type, 'tuple' or 'tensor', q-table or deep-q-network
+        :return: world, policy: world & player's action policy
+        """
+
+        # initiate graphs: number of steps per epoch, epsilon value per epoch, mean loss value per epoch
+        _plot = {'steps': Plot(max_epochs, rolling={'method': 'mean', 'N': print_num}, figure_num=0),
+                 'epsilon': Plot(max_epochs, title='Epsilon vs Epoch', ylabel='Epsilon', figure_num=1),
+                 'loss': Plot(max_epochs, title='Loss vs Epoch', ylabel='Loss', figure_num=2,
+                              rolling={'method': 'mean', 'N': print_num})}
+
+        # initiate policy
+        _policy = Policy(memory_size, batch_size, alpha, gamma,
+                         Epsilon(max_epochs=max_epochs, p_random=eps_rand, p_greedy=eps_greedy, explore_min=eps_min))
+
+        # initiate world
+        _world = World(_policy, state_type)
+
+        # training
+        tictoc = TicToc(max_epochs)  # start time counter
+        for epoch in range(max_epochs):
+            # perform world step until game is over, don't print board
+            while _world.play(silent=True, smart_enemy=smart_enemy):
+                _policy.push(_world.transition())  # save transition in memory
+            _policy.push(_world.transition())  # save game over transition in memory
+
+            # optimize policy
+            _policy.optimize(batch_size if state_type is 'tensor' else _world.step_num())
+
+            # update plots
+            _plot['steps'].update(epoch, _world.step_num())
+            _plot['epsilon'].update(epoch, _policy.eps())
+            _plot['loss'].update(epoch, _policy.mean_loss())
+
+            # print statistics every PRINT_NUM epochs
+            if (epoch + 1) % print_num == 0:
+                tictoc.toc()
+                print('Epoch %7d;' % (epoch + 1), 'Step count: %5d;' % _plot['steps'].roll[epoch],
+                      'loss: %7.3f; ' % _plot['loss'].roll[epoch], 'eta (s): %6.2f; ' % tictoc.eta(epoch))
+
+            # update epsilon and reset players positions in world, if this is not last epoch
+            if not epoch + 1 == max_epochs:
+                _policy.epsilon_decay(epoch)  # update exploration/exploitation percent using decay algorithm
+                _world.reset(_policy)  # reset players in world
+
+        # save policy network
+        _policy.save(net_path)
+
+        # summarize training: maximal steps all over the training and training total time
+        tictoc.toc()
+        print('Max duration: %d;' % max(list(_plot['steps'].roll.values())[-len(_plot['steps'].roll) // 2:]),
+              'Elapsed %.2f (s)' % tictoc.elapsed())
+
+        return _world, _policy, _plot
+
 
     # play game after training
     play = True
 
-    # initiate graphs: number of steps per epoch, epsilon value per epoch, mean loss value per epoch
-    plot_steps = Plot(MAX_EPOCHS, rolling={'method': 'mean', 'N': PRINT_NUM}, figure_num=0)
-    plot_epsilon = Plot(MAX_EPOCHS, title='Epsilon vs Epoch', ylabel='Epsilon', figure_num=1)
-    plot_loss = Plot(MAX_EPOCHS, title='Loss vs Epoch', ylabel='Loss', figure_num=2,
-                     rolling={'method': 'mean', 'N': PRINT_NUM})
-
-    # initiate policy
-    policy = Policy(MEMORY_SIZE, BATCH_SIZE, ALPHA, GAMMA,
-                    Epsilon(max_epochs=MAX_EPOCHS, p_random=EPS_RANDOM, p_greedy=EPS_GREEDY, explore_min=EPS_MIN))
-
-    # initiate world
-    world = World(policy, STATE_TYPE)
-
-    tictoc = TicToc(MAX_EPOCHS)  # start time counter
-    for epoch in range(MAX_EPOCHS):
-        # perform world step until game is over, don't print board
-        while world.play(silent=True, smart_enemy=SMART_ENEMY):
-            policy.push(world.transition())  # save transition in memory
-        policy.push(world.transition())  # save game over transition in memory
-
-        # optimize policy
-        policy.optimize(BATCH_SIZE if STATE_TYPE is 'tensor' else world.step_num())
-
-        # update plots
-        plot_steps.update(epoch, world.step_num())
-        plot_epsilon.update(epoch, policy.eps())
-        plot_loss.update(epoch, policy.mean_loss())
-
-        # print statistics every PRINT_NUM epochs
-        if (epoch + 1) % PRINT_NUM == 0:
-            tictoc.toc()
-            print('Epoch %7d;' % (epoch + 1), 'Step count: %5d;' % plot_steps.roll[epoch],
-                  'loss: %7.3f; ' % plot_loss.roll[epoch], 'eta (s): %6.2f; ' % tictoc.eta(epoch))
-
-        # update epsilon and reset players positions in world, if this is not last epoch
-        if not epoch + 1 == MAX_EPOCHS:
-            policy.epsilon_decay(epoch)  # update exploration/exploitation percent using decay algorithm
-            world.reset()                # reset players in world
-
-    # save policy network
-    policy.save(NET_PATH)
-
-    # summarize training: maximal steps all over the training and training total time
-    tictoc.toc()
-    print('Max duration: %d;' % max(list(plot_steps.roll.values())[-len(plot_steps.roll) // 2:]),
-          'Elapsed %.2f (s)' % tictoc.elapsed())
+    # hyper parameters & run training
+    world, policy, plots = training(max_epochs=150000,
+                                    print_num=10000,
+                                    alpha=0.5,
+                                    gamma=0.999,
+                                    memory_size=512,
+                                    batch_size=512,
+                                    net_path='./mem/policy_net.pkl',
+                                    smart_enemy=True,
+                                    eps_rand=0.1,
+                                    eps_greedy=0.1,
+                                    eps_min=0.,
+                                    state_type='tuple')
 
     # plot graphs: number of steps per epoch, epsilon value per epoch, mean loss value per epoch
-    plot_steps.plot()
-    plot_epsilon.plot()
-    plot_loss.plot()
+    for key in plots:
+        plots[key].plot()
 
     # play one game
     if play:
         policy.set_greedy()  # set greedy policy
-        world.reset()        # reset players in world
+        world.reset(policy)  # reset players in world
         # perform world step and print board until game is over
-        while world.play(silent=False, smart_enemy=SMART_ENEMY):
+        while world.play(silent=False, smart_enemy=True):
             pass
