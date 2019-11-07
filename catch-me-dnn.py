@@ -8,7 +8,7 @@ from math import copysign
 from functools import reduce
 from time import sleep
 from typing import List, Tuple, Callable, Dict, TypeVar, NamedTuple, Union, Optional
-from torch import tensor, float, stack, save, load, Tensor
+from torch import device, cuda, tensor, float, stack, save, load, Tensor
 from pickle import dump
 from pickle import load as p_load
 from torch.nn import Module, ModuleList, Linear, BatchNorm1d
@@ -20,6 +20,12 @@ from torch.nn.functional import relu
 # TODO: Convert main to function with hyper parameters
 # TODO: Add run-me.py to run all
 # TODO: (optional) Add .json file for settings
+
+# use gpu if there is cuda device
+# dev = device("cuda" if cuda.is_available() else "cpu")
+
+# force cpu
+dev = device('cpu')
 
 # position definition: (x, y) position index
 Position = Tuple[int, int]
@@ -432,7 +438,7 @@ class Policy:
         # initiate according to data type
         if self._dtype is 'tensor':
             # initiate neural network network, computes V(s_t) expected values of actions for given state
-            self._net = DQN(inputs=size, outputs=n_actions)
+            self._net = DQN(inputs=size, outputs=n_actions).to(device=dev)
             # set optimizer
             # noinspection PyUnresolvedReferences
             self._optimizer = Optimizer(self._net.parameters())
@@ -687,7 +693,7 @@ class World:
 
         # return according to data type
         if self._dtype is 'tensor':
-            return tensor(state, dtype=float).unsqueeze(0)
+            return tensor(state, dtype=float, device=dev).unsqueeze(0)
         elif self._dtype is 'tuple':
             return tuple(reduce(lambda a, b: a + b, state))
         else:
@@ -758,7 +764,8 @@ class World:
 
         # policy initial params
         policy.push(self.transition())  # save start transition in memory
-        policy.push_q(self._curr_state)  # set state_0
+        if self._dtype is 'tuple':
+            policy.push_q(self._curr_state)  # set state_0
 
     def step_num(self) -> int:
         """
@@ -781,7 +788,7 @@ class World:
         """
         # return according to data type
         if self._dtype is 'tensor':
-            return tensor(self._action_index[self._last_action])
+            return tensor(self._action_index[self._last_action], device=dev)
         elif self._dtype is 'tuple':
             return self._action_index[self._last_action]
         else:
@@ -801,7 +808,7 @@ class World:
         """
         # return according to data type
         if self._dtype is 'tensor':
-            return tensor(self._reward, dtype=float)
+            return tensor(self._reward, dtype=float, device=dev)
         elif self._dtype is 'tuple':
             return self._reward
         else:
@@ -850,8 +857,8 @@ class World:
 
 if __name__ == '__main__':
     # set hyper parameters
-    MAX_EPOCHS = 1500000                # maximal training epochs numbers
-    PRINT_NUM = 10000                   # print status every PRINT_NUM epochs
+    MAX_EPOCHS = 15000                  # maximal training epochs numbers
+    PRINT_NUM = 1000                    # print status every PRINT_NUM epochs
     ALPHA = 0.5                         # learning rate (for Q-Learning only)
     GAMMA = 0.999                       # discount factor
     MEMORY_SIZE = 128                   # replay memory size
@@ -861,7 +868,7 @@ if __name__ == '__main__':
     EPS_RANDOM = 0.1                    # percent of exploration epochs at the beginning
     EPS_GREEDY = 0.1                    # percent of exploitation epochs at the end
     EPS_MIN = 0.                        # minimal exploration percent, 0 == greedy
-    STATE_TYPE = 'tuple'
+    STATE_TYPE = 'tensor'
 
     # play game after training
     play = True
