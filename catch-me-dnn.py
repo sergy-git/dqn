@@ -22,7 +22,7 @@ from torch.nn.functional import relu
 # TODO: (optional) Add .json file for settings
 
 # use gpu if there is cuda device
-# dev = device("cuda" if cuda.is_available() else "cpu")
+# dev = device('cuda' if cuda.is_available() else 'cpu')
 
 # force cpu
 dev = device('cpu')
