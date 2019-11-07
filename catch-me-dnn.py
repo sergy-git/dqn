@@ -17,8 +17,6 @@ from torch.optim import RMSprop as Optimizer
 from torch.nn import SmoothL1Loss as Loss
 from torch.nn.functional import relu
 
-# TODO: (optional) Add .json file for settings
-
 # use gpu if there is cuda device
 # from torch import cuda
 # dev = device('cuda' if cuda.is_available() else 'cpu')
