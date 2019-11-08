@@ -338,7 +338,7 @@ class ReplayMemory:
 
 
 class DQN(Module):
-    def __init__(self, inputs: int = 25, hidden_depth: int = 1, hidden_dim: int = 16, outputs: int = 5):
+    def __init__(self, inputs: int, outputs: int, hidden_depth: int = 2, hidden_dim: int = 16):
         """
         :param inputs: input layer dimension
         :param hidden_depth: number of hidden layers
@@ -524,7 +524,7 @@ class Policy:
                 target = reward + self._gamma * self._best_action[curr_state]['value']
                 error = target - self._q[prev_state][last_action]
                 self._q[prev_state][last_action] += self._alpha * error
-                self._acc_loss += error
+                self._acc_loss += self._alpha * error
                 self._counts += 1
 
                 if self._q[prev_state][last_action] > self._best_action[prev_state]['value']:
@@ -572,6 +572,7 @@ class Policy:
             for param in self._net.parameters():
                 param.grad.data.clamp_(-1, 1)
             self._optimizer.step()
+            return
 
     def policy_function(self, state: State) -> int:
         # explore or exploit
@@ -731,9 +732,6 @@ class World:
         if game_over:
             # reward for game over
             self._reward = -2
-        elif self._last_action == (0, 0):
-            # reward for not moving, while game not over
-            self._reward = -1
         else:
             # reward for making a move, while game not over
             self._reward = 1
@@ -956,7 +954,7 @@ if __name__ == '__main__':
     play = True
 
     # hyper parameters & run training
-    world, policy, plots = training(max_epochs=20000,
+    world, policy, plots = training(max_epochs=40000,       # todo: Why 30000 loss goes down and 40000 loss goes up?
                                     print_num=2000,
                                     alpha=0.5,
                                     gamma=0.999,
@@ -964,10 +962,10 @@ if __name__ == '__main__':
                                     eps_greedy=0.1,
                                     eps_min=0.,
                                     memory_size=512,
-                                    batch_size=16,
+                                    batch_size=32,
                                     random_batch=True,
                                     smart_enemy=True,
-                                    algo_type=AlgoType('RQL'),
+                                    algo_type=AlgoType('DQN'),
                                     net_path='./mem/policy_net.pkl')
 
     # plot graphs: number of steps per epoch, epsilon value per epoch, mean loss value per epoch
@@ -978,7 +976,6 @@ if __name__ == '__main__':
     if play:
         policy.set_greedy()                 # set greedy policy
         world.reset()                       # reset players in world
-        policy.push(world.transition())     # save start transition in memory
 
         # perform world step and print board until game is over
         while world.play(silent=False, smart_enemy=True):
