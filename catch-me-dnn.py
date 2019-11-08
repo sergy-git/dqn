@@ -681,10 +681,18 @@ class World:
         initiate all actors: player & enemies at (0, 0) position
         :param n:  number of enemies, n >= 1
         """
-        # verify minimal number of actors is 1
-        n = 1 if n < 1 else n
         # initiate Player
         self._player = Player()
+        # initiate enemies & prepare full actors list
+        self._init_enemies(n)
+
+    def _init_enemies(self, n: int) -> None:
+        """
+        initiate all enemies: enemies at (0, 0) position
+        :param n:  number of enemies, n >= 1
+        """
+        # verify minimal number of actors is 1
+        n = 1 if n < 1 else n
         # initiate enemies
         self._enemies = [Enemy() for _ in range(n)]
         # prepare full actors list
@@ -951,8 +959,8 @@ if __name__ == '__main__':
                                     print_num=10000,
                                     alpha=0.5,
                                     gamma=0.999,
-                                    memory_size=512,
-                                    batch_size=512,
+                                    memory_size=128,
+                                    batch_size=64,
                                     net_path='./mem/policy_net.pkl',
                                     smart_enemy=True,
                                     eps_rand=0.1,
