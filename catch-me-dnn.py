@@ -34,20 +34,20 @@ State = TypeVar('State', Tuple, Tensor)
 LastAction = TypeVar('LastAction', int, Tensor)
 # immediate reward value
 Reward = TypeVar('Reward', int, Tensor)
+# definition of optimization algorithm type RQL or DQN, reinforced-q-learning or deep-q-network
+AlgoTypes = ['RQL', 'DQN']
 
 
 class AlgoType:
-    """definition of optimization algorithm type RQL or DQN, reinforced-q-learning or deep-q-network"""
-    types = ['RQL', 'DQN']
-
-    def __init__(self, dtype: str):
+    """verification of optimization algorithm type RQL or DQN"""
+    def __init__(self, dtype: AlgoTypes):
         """
         :param dtype: optimization algorithm type RQL or DQN
         """
-        if dtype in self.types:
+        if dtype in AlgoTypes:
             self._type = dtype
         else:
-            raise ValueError("Unknown type '%s', expected one from a list: " % dtype, self.types)
+            raise ValueError("Unknown type '%s', expected one from a list: " % dtype, AlgoTypes)
 
     def item(self):
         """get optimization algorithm type"""
@@ -979,7 +979,7 @@ if __name__ == '__main__':
                                     batch_size=16,
                                     random_batch=None,
                                     smart_enemy=True,
-                                    algo_type=AlgoType('RQL'),
+                                    algo_type=AlgoType('RLQ'),
                                     net_path='./mem/policy_net.pkl')
 
     # plot graphs: number of steps per epoch, epsilon value per epoch, mean loss value per epoch
