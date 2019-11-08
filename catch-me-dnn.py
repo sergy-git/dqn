@@ -495,16 +495,7 @@ class Policy:
         elif self._dtype is 'RQL':
             self._optimize_rlq(batch_size=batch_size, random_batch=False if random_batch is None else random_batch)
 
-    def push_q(self, state):
-        """
-        add new state to q_table
-        :param state: world state - board image, when every pixel is cell
-        """
-        # verify that type requires q-table update
-        if self._dtype is 'RQL':
-            self._push_q(state)
-
-    def _push_q(self, state):
+    def _update_q(self, state):
         """
         add new state to q_table
         :param state: world state - board image, when every pixel is cell
@@ -527,8 +518,8 @@ class Policy:
         if transitions is not None:
             for transition in transitions:
                 prev_state, last_action, curr_state, reward = transition
-                self._push_q(prev_state)
-                self._push_q(curr_state)
+                self._update_q(prev_state)
+                self._update_q(curr_state)
 
                 target = reward + self._gamma * self._best_action[curr_state]['value']
                 error = target - self._q[prev_state][last_action]
@@ -570,6 +561,7 @@ class Policy:
             expected_state_action_values = (state_values * self._gamma) + reward_batch
 
             # compute huber loss
+            # todo: probably wrong direction of loss, game over is good!!!
             loss = self._loss(state_action_values, expected_state_action_values)
             self._acc_loss += loss.detach().item()
             self._counts += 1
@@ -681,7 +673,9 @@ class World:
         # initiate n_actors at (0, 0) position
         self._init_actors(n_enemies)
         # reset actors to random positions
-        self.reset(player_policy)
+        self.reset()
+        # save start transition in memory
+        player_policy.push(self.transition())
         # set board object at size n, m and link actors to board
         self._board = CatchMeBoard(n, m, self._actors)
 
@@ -768,11 +762,8 @@ class World:
         x, y = position
         return x in self._rx and y in self._ry
 
-    def reset(self, player_policy: Policy) -> None:
-        """
-        reset world parameters: clear step counter, set actors to random positions and evaluate initial transition
-        :param player_policy: player's action policy for any state
-        """
+    def reset(self) -> None:
+        """reset world parameters: clear step counter, set actors to random positions and evaluate initial transition"""
         # clear step counter
         self._step_count = 0
 
@@ -790,10 +781,6 @@ class World:
         self._curr_state = self._prev_state
         self._last_action = (0, 0)
         self._reward = 0
-
-        # policy initial params
-        player_policy.push(self.transition())    # save start transition in memory
-        player_policy.push_q(self.curr_state())  # save state_0 to q-table
 
     def dtype(self):
         return self._dtype
@@ -950,8 +937,9 @@ if __name__ == '__main__':
 
             # update epsilon and reset players positions in world, if this is not last epoch
             if not epoch + 1 == max_epochs:
-                _policy.epsilon_decay(epoch)  # update exploration/exploitation percent using decay algorithm
-                _world.reset(_policy)  # reset players in world
+                _policy.epsilon_decay(epoch)        # update exploration/exploitation percent using decay algorithm
+                _world.reset()                      # reset players in world
+                _policy.push(_world.transition())   # save start transition in memory
 
         # save policy network
         _policy.save(net_path)
@@ -977,7 +965,7 @@ if __name__ == '__main__':
                                     eps_min=0.,
                                     memory_size=512,
                                     batch_size=16,
-                                    random_batch=None,
+                                    random_batch=True,
                                     smart_enemy=True,
                                     algo_type=AlgoType('RQL'),
                                     net_path='./mem/policy_net.pkl')
@@ -988,8 +976,10 @@ if __name__ == '__main__':
 
     # play one game
     if play:
-        policy.set_greedy()  # set greedy policy
-        world.reset(policy)  # reset players in world
+        policy.set_greedy()                 # set greedy policy
+        world.reset()                       # reset players in world
+        policy.push(world.transition())     # save start transition in memory
+
         # perform world step and print board until game is over
         while world.play(silent=False, smart_enemy=True):
             pass
