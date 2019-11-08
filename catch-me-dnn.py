@@ -34,6 +34,8 @@ State = TypeVar('State', Tuple, Tensor)
 LastAction = TypeVar('LastAction', int, Tensor)
 # immediate reward value
 Reward = TypeVar('Reward', int, Tensor)
+# definition of optimization algorithm type RQL or DQN
+AType = ('RLQ', 'DQN')
 
 
 class Transition(NamedTuple):
@@ -293,19 +295,17 @@ class ReplayMemory:
         :param batch_size: number of transitions to pass
         :return: batch of transitions
         """
-        if len(self) >= batch_size:
+        # return requested batch of transitions if memory already contains enough transitions
+        if len(self) > batch_size:
+            batch_size += 1  # include start position in training, verifies that training batch > 1
+            # wrap around verification
             if batch_size > self._index:
                 res = self._memory[-(batch_size - self._index):] + self._memory[:self._index]
             else:
                 res = self._memory[(self._index - batch_size):self._index]
         else:
             res = None
-        # wrap around verification
-        # return requested batch of transitions if memory already contains enough transitions
-        if res is not None:
-            b = Transition(*zip(*res))
-            if not b.reward[-1] == -2:
-                print('WoW')
+
         return res
 
     def push(self, transition: Transition) -> None:
@@ -398,7 +398,7 @@ class Policy:
     _loss: Loss              # loss function
     _acc_loss: float         # accumulated loss value
     _counts: int             # accumulated loss epoch counter
-    _dtype: str              # definition of state type, 'tuple' or 'tensor'
+    _dtype: str              # definition of state type, 'RQL' or 'DQN'
 
     def __init__(self, memory_size: int, batch_size: int, alpha: float = 0.5, gamma: float = 0.9,
                  epsilon: Optional[Epsilon] = None):
@@ -424,7 +424,7 @@ class Policy:
         initiate parameters that depend on world parameters
         :param n_actions: available number of actions
         :param size: board size
-        :param dtype: state data type, 'tuple' or 'tensor'
+        :param dtype: definition of optimization algorithm type RQL or DQN, reinforced-q-learning or deep-q-network
         """
         # set action range
         self._actions = range(n_actions)
@@ -433,14 +433,14 @@ class Policy:
         self._dtype = dtype
 
         # initiate according to data type
-        if self._dtype is 'tensor':
+        if self._dtype is 'DQN':
             # initiate neural network network, computes V(s_t) expected values of actions for given state
             # noinspection PyUnresolvedReferences
             self._net = DQN(inputs=size, outputs=n_actions).to(device=dev)
             # set optimizer
             # noinspection PyUnresolvedReferences
             self._optimizer = Optimizer(self._net.parameters())
-        elif self._dtype is 'tuple':
+        elif self._dtype is 'RQL':
             self._q = {}
             self._best_action = {}
         else:
@@ -469,16 +469,18 @@ class Policy:
         """get epsilon value"""
         return self._epsilon_value
 
-    def optimize(self, batch_size) -> None:
+    def optimize(self, batch_size: int, random_batch: Optional[bool] = None) -> None:
         """
         policy optimization step
         :param batch_size: number of transitions to pass
+        :param random_batch: use random batch or last game transitions for optimisation
         """
         # return according to data type
-        if self._dtype is 'tensor':
-            return self._optimize_dnn(batch_size=batch_size)
-        elif self._dtype is 'tuple':
-            self._optimize_rlq(step_num=batch_size)
+        if self._dtype is 'DQN':
+
+            self._optimize_dnn(batch_size=batch_size, random_batch=True if random_batch is None else random_batch)
+        elif self._dtype is 'RQL':
+            self._optimize_rlq(batch_size=batch_size, random_batch=False if random_batch is None else random_batch)
         else:
             raise ValueError("Unknown type %s." % self._dtype)
 
@@ -488,7 +490,7 @@ class Policy:
         :param state: world state - board image, when every pixel is cell
         """
         # verify that type requires q-table update
-        if self._dtype is 'tuple':
+        if self._dtype is 'RQL':
             self._push_q(state)
 
     def _push_q(self, state):
@@ -502,17 +504,19 @@ class Policy:
             for action in self._actions:
                 self._q[state].update({action: 0})
 
-    def _optimize_rlq(self, step_num: int) -> None:
+    def _optimize_rlq(self, batch_size: int, random_batch: bool = False) -> None:
         """
         q-learning based policy optimization step
-        :param step_num: number of samples for current optimization step (last game length)
+        :param batch_size: number of samples for current optimization step (last game length)
+        :param random_batch: use random batch or last game transitions for optimisation
         """
         # load last game batch
-        transitions = self._memory.last(step_num)
+        transitions = self._memory.last(batch_size) if not random_batch else self._memory.random(batch_size)
 
         if transitions is not None:
             for transition in transitions:
                 prev_state, last_action, curr_state, reward = transition
+                self._push_q(prev_state)
                 self._push_q(curr_state)
 
                 target = reward + self._gamma * self._best_action[curr_state]['value']
@@ -525,13 +529,14 @@ class Policy:
                     self._best_action[prev_state]['action'] = last_action
                     self._best_action[prev_state]['value'] = self._q[prev_state][last_action]
 
-    def _optimize_dnn(self, batch_size: int) -> None:
+    def _optimize_dnn(self, batch_size: int, random_batch: bool = True) -> None:
         """
         dnn based policy optimization step
         :param batch_size: number of samples for current optimization step
+        :param random_batch: use random batch or last game transitions for optimisation
         """
         # load random optimization batch
-        transitions = self._memory.random(batch_size)
+        transitions = self._memory.random(batch_size) if random_batch else self._memory.last(batch_size)
 
         if transitions is not None:
             # transpose the batch (https://stackoverflow.com/a/19343/3343043 for detailed explanation). this
@@ -571,11 +576,11 @@ class Policy:
             # random action
             action = choice(self._actions)
         else:
-            if self._dtype is 'tensor':
+            if self._dtype is 'DQN':
                 self._net.eval()    # set to eval() mode, because of batch normalization
                 action = self._net(state.unsqueeze(0)).max(1)[1].detach()   # Q(s_t,a) best action for given state
                 self._net.train()   # set to train() mode, for optimization
-            elif self._dtype is 'tuple':
+            elif self._dtype is 'RQL':
                 if state in self._best_action.keys():
                     # Q(s_t,a) best action for given state
                     action = self._best_action[state]['action']
@@ -592,9 +597,9 @@ class Policy:
         save neural network state dictionary
         :param path: full path for state dictionary file
         """
-        if self._dtype is 'tensor':
+        if self._dtype is 'DQN':
             save(self._net.state_dict(), path)
-        elif self._dtype is 'tuple':
+        elif self._dtype is 'RQL':
             file = open(path, "wb")
             dump(self._q, file)
             file.close()
@@ -606,10 +611,10 @@ class Policy:
         load neural network state dictionary
         :param path: full path for state dictionary file
         """
-        if self._dtype is 'tensor':
+        if self._dtype is 'DQN':
             self._net.load_state_dict(load(path))
             self._net.eval()
-        elif self._dtype is 'tensor':
+        elif self._dtype is 'DQN':
             file = open(path, 'rb')
             self._q = p_load(file)
             file.close()
@@ -637,7 +642,7 @@ class World:
 
     _action_index: Dict[Action, int]    # LUT - converts action to index
     _policy: Callable[[State], int]     # policy function that return player's action_index for given state
-    _dtype: str                         # definition of state type, 'tuple' or 'tensor'
+    _dtype: str                         # definition of state type, 'RQL' or 'DQN'
     _rx: range                          # range of indexes along x-axis, width
     _ry: range                          # range of indexes along y-axis, height
     _player: Actor                      # pointer to player object
@@ -653,7 +658,7 @@ class World:
     def __init__(self, player_policy: Policy, dtype: str, n: int = 5, m: int = 5, n_enemies: int = 2):
         """
         :param player_policy: policy function that return player's action_index for given state
-        :param dtype: definition of state type, 'tuple' or 'tensor'
+        :param dtype: definition of optimization algorithm type RQL or DQN, reinforced-q-learning or deep-q-network
         :param n: number of cells along x-axis, width
         :param m: number of cells along y-axis, height
         :param n_enemies: number of enemies
@@ -711,9 +716,9 @@ class World:
             state[y][x] = 255 if actor.type is 'enemy' else 0
 
         # return according to data type
-        if self._dtype is 'tensor':
+        if self._dtype is 'DQN':
             return tensor(state, dtype=float, device=dev).unsqueeze(0)
-        elif self._dtype is 'tuple':
+        elif self._dtype is 'RQL':
             return tuple(reduce(lambda a, b: a + b, state))
         else:
             raise ValueError("Unknown type %s." % self._dtype)
@@ -811,9 +816,9 @@ class World:
         :return: last action
         """
         # return according to data type
-        if self._dtype is 'tensor':
+        if self._dtype is 'DQN':
             return tensor(self._action_index[self._last_action], device=dev)
-        elif self._dtype is 'tuple':
+        elif self._dtype is 'RQL':
             return self._action_index[self._last_action]
         else:
             raise ValueError("Unknown type %s." % self._dtype)
@@ -831,9 +836,9 @@ class World:
         :return: immediate reward
         """
         # return according to data type
-        if self._dtype is 'tensor':
+        if self._dtype is 'DQN':
             return tensor(self._reward, dtype=float, device=dev)
-        elif self._dtype is 'tuple':
+        elif self._dtype is 'RQL':
             return self._reward
         else:
             raise ValueError("Unknown type %s." % self._dtype)
@@ -881,23 +886,28 @@ class World:
 
 if __name__ == '__main__':
 
-    def training(max_epochs, print_num, alpha, gamma, memory_size, batch_size, net_path, smart_enemy,
-                 eps_rand, eps_greedy, eps_min, state_type):
+    def training(max_epochs: int, print_num: int,
+                 alpha: float, gamma: float, eps_rand: float, eps_greedy: float, eps_min: float,
+                 memory_size: int, batch_size: int, random_batch: Optional[bool],
+                 smart_enemy: bool,
+                 algo_type: AType,
+                 net_path: str) -> (World, Policy, Dict[str, Plot]):
         """
         training routine
         :param max_epochs: maximal training epochs numbers
         :param print_num: print status every PRINT_NUM epochs
         :param alpha: learning rate (for Q-Learning only)
         :param gamma: discount factor
-        :param memory_size: replay memory size
-        :param batch_size: random batch size
-        :param net_path: network save path
-        :param smart_enemy: use enemy smart policy if true, else use random policy
         :param eps_rand: percent of exploration epochs at the beginning
         :param eps_greedy: percent of exploitation epochs at the end
         :param eps_min: minimal exploration percent, 0 == greedy
-        :param state_type: definition of state type, 'tuple' or 'tensor', q-table or deep-q-network
-        :return: world, policy: world & player's action policy
+        :param memory_size: replay memory size
+        :param batch_size: random batch size
+        :param random_batch: use random batch or last game transitions for optimisation
+        :param smart_enemy: use enemy smart policy if true, else use random policy
+        :param algo_type: definition of optimization algorithm type RQL or DQN, reinforced-q-learning or deep-q-network
+        :param net_path: network save path
+        :return: world, policy, plots: world & player's action policy and dictionary of plots
         """
 
         # initiate graphs: number of steps per epoch, epsilon value per epoch, mean loss value per epoch
@@ -911,7 +921,7 @@ if __name__ == '__main__':
                          Epsilon(max_epochs=max_epochs, p_random=eps_rand, p_greedy=eps_greedy, explore_min=eps_min))
 
         # initiate world
-        _world = World(_policy, state_type)
+        _world = World(_policy, algo_type)
 
         # training
         tictoc = TicToc(max_epochs)  # start time counter
@@ -922,7 +932,12 @@ if __name__ == '__main__':
             _policy.push(_world.transition())  # save game over transition in memory
 
             # optimize policy
-            _policy.optimize(batch_size if state_type is 'tensor' else _world.step_num())
+            if random_batch is None:
+                optim_batch = batch_size if algo_type is 'DQN' else _world.step_num()
+            else:
+                optim_batch = batch_size if random_batch else _world.step_num()
+
+            _policy.optimize(batch_size=optim_batch, random_batch=random_batch)
 
             # update plots
             _plot['steps'].update(epoch, _world.step_num())
@@ -955,18 +970,19 @@ if __name__ == '__main__':
     play = True
 
     # hyper parameters & run training
-    world, policy, plots = training(max_epochs=150000,
-                                    print_num=10000,
+    world, policy, plots = training(max_epochs=20000,
+                                    print_num=2000,
                                     alpha=0.5,
                                     gamma=0.999,
-                                    memory_size=128,
-                                    batch_size=64,
-                                    net_path='./mem/policy_net.pkl',
-                                    smart_enemy=True,
                                     eps_rand=0.1,
                                     eps_greedy=0.1,
                                     eps_min=0.,
-                                    state_type='tuple')
+                                    memory_size=512,
+                                    batch_size=16,
+                                    random_batch=None,
+                                    smart_enemy=True,
+                                    algo_type='RQL',
+                                    net_path='./mem/policy_net.pkl')
 
     # plot graphs: number of steps per epoch, epsilon value per epoch, mean loss value per epoch
     for key in plots:
