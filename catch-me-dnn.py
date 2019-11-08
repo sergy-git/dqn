@@ -34,8 +34,24 @@ State = TypeVar('State', Tuple, Tensor)
 LastAction = TypeVar('LastAction', int, Tensor)
 # immediate reward value
 Reward = TypeVar('Reward', int, Tensor)
-# definition of optimization algorithm type RQL or DQN
-AType = ('RLQ', 'DQN')
+
+
+class AlgoType:
+    """definition of optimization algorithm type RQL or DQN, reinforced-q-learning or deep-q-network"""
+    types = ['RQL', 'DQN']
+
+    def __init__(self, dtype: str):
+        """
+        :param dtype: optimization algorithm type RQL or DQN
+        """
+        if dtype in self.types:
+            self._type = dtype
+        else:
+            raise ValueError("Unknown type '%s', expected one from a list: " % dtype, self.types)
+
+    def item(self):
+        """get optimization algorithm type"""
+        return self._type
 
 
 class Transition(NamedTuple):
@@ -424,7 +440,7 @@ class Policy:
         initiate parameters that depend on world parameters
         :param n_actions: available number of actions
         :param size: board size
-        :param dtype: definition of optimization algorithm type RQL or DQN, reinforced-q-learning or deep-q-network
+        :param dtype: optimization algorithm type RQL or DQN
         """
         # set action range
         self._actions = range(n_actions)
@@ -443,8 +459,6 @@ class Policy:
         elif self._dtype is 'RQL':
             self._q = {}
             self._best_action = {}
-        else:
-            raise ValueError("Unknown type %s." % self._dtype)
 
     def push(self, transition: Transition) -> None:
         """
@@ -477,12 +491,9 @@ class Policy:
         """
         # return according to data type
         if self._dtype is 'DQN':
-
             self._optimize_dnn(batch_size=batch_size, random_batch=True if random_batch is None else random_batch)
         elif self._dtype is 'RQL':
             self._optimize_rlq(batch_size=batch_size, random_batch=False if random_batch is None else random_batch)
-        else:
-            raise ValueError("Unknown type %s." % self._dtype)
 
     def push_q(self, state):
         """
@@ -574,23 +585,20 @@ class Policy:
         # explore or exploit
         if self._epsilon_value > random():
             # random action
-            action = choice(self._actions)
+            return choice(self._actions)
         else:
             if self._dtype is 'DQN':
                 self._net.eval()    # set to eval() mode, because of batch normalization
                 action = self._net(state.unsqueeze(0)).max(1)[1].detach()   # Q(s_t,a) best action for given state
                 self._net.train()   # set to train() mode, for optimization
+                return action
             elif self._dtype is 'RQL':
                 if state in self._best_action.keys():
                     # Q(s_t,a) best action for given state
-                    action = self._best_action[state]['action']
+                    return self._best_action[state]['action']
                 else:
                     # random action
-                    action = choice(self._actions)
-            else:
-                raise ValueError("Unknown type %s." % self._dtype)
-
-        return action
+                    return choice(self._actions)
 
     def save(self, path: str) -> None:
         """
@@ -603,8 +611,6 @@ class Policy:
             file = open(path, "wb")
             dump(self._q, file)
             file.close()
-        else:
-            raise ValueError("Unknown type %s." % self._dtype)
 
     def load(self, path: str) -> None:
         """
@@ -618,8 +624,6 @@ class Policy:
             file = open(path, 'rb')
             self._q = p_load(file)
             file.close()
-        else:
-            raise ValueError("Unknown type %s." % self._dtype)
 
     def mean_loss(self, reset: bool = True) -> float:
         """
@@ -658,7 +662,7 @@ class World:
     def __init__(self, player_policy: Policy, dtype: str, n: int = 5, m: int = 5, n_enemies: int = 2):
         """
         :param player_policy: policy function that return player's action_index for given state
-        :param dtype: definition of optimization algorithm type RQL or DQN, reinforced-q-learning or deep-q-network
+        :param dtype: optimization algorithm type RQL or DQN
         :param n: number of cells along x-axis, width
         :param m: number of cells along y-axis, height
         :param n_enemies: number of enemies
@@ -720,8 +724,6 @@ class World:
             return tensor(state, dtype=float, device=dev).unsqueeze(0)
         elif self._dtype is 'RQL':
             return tuple(reduce(lambda a, b: a + b, state))
-        else:
-            raise ValueError("Unknown type %s." % self._dtype)
 
     def _game_over(self) -> bool:
         """
@@ -820,8 +822,6 @@ class World:
             return tensor(self._action_index[self._last_action], device=dev)
         elif self._dtype is 'RQL':
             return self._action_index[self._last_action]
-        else:
-            raise ValueError("Unknown type %s." % self._dtype)
 
     def curr_state(self) -> State:
         """
@@ -840,8 +840,6 @@ class World:
             return tensor(self._reward, dtype=float, device=dev)
         elif self._dtype is 'RQL':
             return self._reward
-        else:
-            raise ValueError("Unknown type %s." % self._dtype)
 
     def transition(self) -> Transition:
         """
@@ -852,7 +850,7 @@ class World:
 
     def play(self, silent: bool = False, smart_enemy: bool = True) -> bool:
         """
-        perform single world step & raise flag if game is not over
+        perform single world step & report if game is not over
         :param silent: silent mode flag, if true: don't draw world state
         :param smart_enemy: smart mode flag, if false: enemies performs random moves
         :return: true if game not over
@@ -890,7 +888,7 @@ if __name__ == '__main__':
                  alpha: float, gamma: float, eps_rand: float, eps_greedy: float, eps_min: float,
                  memory_size: int, batch_size: int, random_batch: Optional[bool],
                  smart_enemy: bool,
-                 algo_type: AType,
+                 algo_type: AlgoType,
                  net_path: str) -> (World, Policy, Dict[str, Plot]):
         """
         training routine
@@ -921,7 +919,7 @@ if __name__ == '__main__':
                          Epsilon(max_epochs=max_epochs, p_random=eps_rand, p_greedy=eps_greedy, explore_min=eps_min))
 
         # initiate world
-        _world = World(_policy, algo_type)
+        _world = World(_policy, algo_type.item())
 
         # training
         tictoc = TicToc(max_epochs)  # start time counter
@@ -981,7 +979,7 @@ if __name__ == '__main__':
                                     batch_size=16,
                                     random_batch=None,
                                     smart_enemy=True,
-                                    algo_type='RQL',
+                                    algo_type=AlgoType('RQL'),
                                     net_path='./mem/policy_net.pkl')
 
     # plot graphs: number of steps per epoch, epsilon value per epoch, mean loss value per epoch
