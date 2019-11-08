@@ -979,7 +979,7 @@ if __name__ == '__main__':
                                     batch_size=16,
                                     random_batch=None,
                                     smart_enemy=True,
-                                    algo_type=AlgoType('DQN'),
+                                    algo_type=AlgoType('RQL'),
                                     net_path='./mem/policy_net.pkl')
 
     # plot graphs: number of steps per epoch, epsilon value per epoch, mean loss value per epoch
