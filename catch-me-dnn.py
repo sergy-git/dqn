@@ -338,7 +338,7 @@ class ReplayMemory:
 
 
 class DQN(Module):
-    def __init__(self, inputs: int, outputs: int, hidden_depth: int = 2, hidden_dim: int = 16):
+    def __init__(self, inputs: int, outputs: int, hidden_depth: int = 3, hidden_dim: int = 25):
         """
         :param inputs: input layer dimension
         :param hidden_depth: number of hidden layers
@@ -407,7 +407,8 @@ class Policy:
     _epsilon_decay: Epsilon  # epsilon decay algorithm
     _epsilon_value: float    # exploration/exploitation percent {0.0 ... 1.0}, 0 == greedy
     _actions: range          # available range of actions
-    _net: DQN                # neural network network, computes V(s_t) expected values of actions for given state
+    policy_net: DQN         # policy neural network network, computes V(s_t) expected values of actions for given state
+    target_net: DQN         # target neural network network, computes V(s_t) expected values of actions for given state
     _optimizer: Optimizer    # optimizer function
     _q: dict                 # Table for each action value at every state Q(s_t, a)
     _best_action: dict       # best action for each state
@@ -452,10 +453,14 @@ class Policy:
         if self._dtype is 'DQN':
             # initiate neural network network, computes V(s_t) expected values of actions for given state
             # noinspection PyUnresolvedReferences
-            self._net = DQN(inputs=size, outputs=n_actions).to(device=dev)
+            self.policy_net = DQN(inputs=size, outputs=n_actions).to(device=dev)
+            # noinspection PyUnresolvedReferences
+            self.target_net = DQN(inputs=size, outputs=n_actions).to(device=dev)
+            self.target_net.load_state_dict(self.policy_net.state_dict())
+            self.target_net.eval()
             # set optimizer
             # noinspection PyUnresolvedReferences
-            self._optimizer = Optimizer(self._net.parameters())
+            self._optimizer = Optimizer(self.policy_net.parameters(), lr=0.01, alpha=0.99)
         elif self._dtype is 'RQL':
             self._q = {}
             self._best_action = {}
@@ -551,11 +556,11 @@ class Policy:
 
             # compute Q(s_t, a) - the model computes Q(s_t), then we select the columns of actions taken. these
             # are the actions which would've been taken for each batch state according to policy_net.
-            state_action_values = self._net(prev_state_batch).gather(1, last_action_batch)
+            state_action_values = self.policy_net(prev_state_batch).gather(1, last_action_batch)
 
             # compute V(s_{t+1}) for all current states. expected values of actions for curr_state_batch are
-            # computed based on the policy_net; selecting their best reward with max(1)[0].
-            state_values = self._net(curr_state_batch).max(1)[0].unsqueeze(1).detach()
+            # computed based on the target_net; selecting their best reward with max(1)[0].
+            state_values = self.target_net(curr_state_batch).max(1)[0].unsqueeze(1).detach()
 
             # compute the expected Q values (target)
             expected_state_action_values = (state_values * self._gamma) + reward_batch
@@ -569,7 +574,7 @@ class Policy:
             # optimize the model
             self._optimizer.zero_grad()
             loss.backward()
-            for param in self._net.parameters():
+            for param in self.policy_net.parameters():
                 param.grad.data.clamp_(-1, 1)
             self._optimizer.step()
             return
@@ -581,9 +586,9 @@ class Policy:
             return choice(self._actions)
         else:
             if self._dtype is 'DQN':
-                self._net.eval()    # set to eval() mode, because of batch normalization
-                action = self._net(state.unsqueeze(0)).max(1)[1].detach()   # Q(s_t,a) best action for given state
-                self._net.train()   # set to train() mode, for optimization
+                self.policy_net.eval()    # set to eval() mode, because of batch normalization
+                action = self.policy_net(state.unsqueeze(0)).max(1)[1].detach()   # Q(s_t,a) best action for given state
+                self.policy_net.train()   # set to train() mode, for optimization
                 return action
             elif self._dtype is 'RQL':
                 if state in self._best_action.keys():
@@ -599,7 +604,7 @@ class Policy:
         :param path: full path for state dictionary file
         """
         if self._dtype is 'DQN':
-            save(self._net.state_dict(), path)
+            save(self.policy_net.state_dict(), path)
         elif self._dtype is 'RQL':
             file = open(path, "wb")
             dump(self._q, file)
@@ -611,8 +616,8 @@ class Policy:
         :param path: full path for state dictionary file
         """
         if self._dtype is 'DQN':
-            self._net.load_state_dict(load(path))
-            self._net.eval()
+            self.policy_net.load_state_dict(load(path))
+            self.policy_net.eval()
         elif self._dtype is 'DQN':
             file = open(path, 'rb')
             self._q = p_load(file)
@@ -745,7 +750,7 @@ class World:
         """
         return self._actions[self._policy(self._curr_state)]
 
-    def _draw(self):
+    def draw(self):
         """draw world current state (board)"""
         sleep(1)                            # some delay to enable movement recognition
         self._board.draw()                  # draw board
@@ -862,7 +867,7 @@ class World:
 
         # draw world state, if not in silent mode
         if not silent:
-            self._draw()
+            self.draw()
 
         return not self._game_over()
 
@@ -936,6 +941,8 @@ if __name__ == '__main__':
             # update epsilon and reset players positions in world, if this is not last epoch
             if not epoch + 1 == max_epochs:
                 _policy.epsilon_decay(epoch)        # update exploration/exploitation percent using decay algorithm
+                _policy.target_net.load_state_dict(_policy.policy_net.state_dict())
+                _policy.target_net.eval()
                 _world.reset()                      # reset players in world
                 _policy.push(_world.transition())   # save start transition in memory
 
@@ -954,7 +961,7 @@ if __name__ == '__main__':
     play = True
 
     # hyper parameters & run training
-    world, policy, plots = training(max_epochs=40000,       # todo: Why 30000 loss goes down and 40000 loss goes up?
+    world, policy, plots = training(max_epochs=50000,
                                     print_num=2000,
                                     alpha=0.5,
                                     gamma=0.999,
@@ -976,7 +983,7 @@ if __name__ == '__main__':
     if play:
         policy.set_greedy()                 # set greedy policy
         world.reset()                       # reset players in world
-
+        world.draw()                        # draw t=0
         # perform world step and print board until game is over
         while world.play(silent=False, smart_enemy=True):
             pass
