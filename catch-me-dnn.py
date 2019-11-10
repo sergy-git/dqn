@@ -402,13 +402,14 @@ class Policy:
     """player's action policy for any state"""
     _memory: ReplayMemory    # cyclic memory block to store transitions history
     _batch_size: int         # number of samples for single optimization step, dnn only
-    _alpha: float            # learning rate, q-learning only
+    _lr: float               # learning rate, q-learning only
     _gamma: float            # discount factor
+    _alpha: float            # smoothing constant (RMS prop) default = 0.99
     _epsilon_decay: Epsilon  # epsilon decay algorithm
     _epsilon_value: float    # exploration/exploitation percent {0.0 ... 1.0}, 0 == greedy
     _actions: range          # available range of actions
-    policy_net: DQN         # policy neural network network, computes V(s_t) expected values of actions for given state
-    target_net: DQN         # target neural network network, computes V(s_t) expected values of actions for given state
+    policy_net: DQN          # policy neural network network, computes V(s_t) expected values of actions for given state
+    target_net: DQN          # target neural network network, computes V(s_t) expected values of actions for given state
     _optimizer: Optimizer    # optimizer function
     _q: dict                 # Table for each action value at every state Q(s_t, a)
     _best_action: dict       # best action for each state
@@ -417,19 +418,20 @@ class Policy:
     _counts: int             # accumulated loss epoch counter
     _dtype: str              # definition of state type, 'RQL' or 'DQN'
 
-    def __init__(self, memory_size: int, batch_size: int, alpha: float = 0.5, gamma: float = 0.9,
+    def __init__(self, memory_size: int, batch_size: int, lr: float = 0.5, gamma: float = 0.9, alpha: float = 0.99,
                  epsilon: Optional[Epsilon] = None):
         """
         :param memory_size: maximal memory capacity
         :param batch_size: number of samples for single optimization step, dnn only
-        :param alpha: learning rate, q-learning only
+        :param lr: learning rate, q-learning only
         :param gamma: discount factor, determines the importance of future rewards
         :param epsilon: exploration/exploitation decay algorithm, gradually change epsilon from 1 to 0, 0 == greedy
         """
         self._memory = ReplayMemory(memory_size)
         self._batch_size = batch_size
-        self._alpha = alpha
+        self._lr = lr
         self._gamma = gamma
+        self._alpha = alpha
         self._epsilon_decay = epsilon
         self._epsilon_value = self._epsilon_decay.item() if self._epsilon_decay is not None else 0  # greedy if None
         self._loss = Loss()
@@ -460,7 +462,7 @@ class Policy:
             self.target_net.eval()
             # set optimizer
             # noinspection PyUnresolvedReferences
-            self._optimizer = Optimizer(self.policy_net.parameters(), lr=0.01, alpha=0.99)
+            self._optimizer = Optimizer(self.policy_net.parameters(), lr=self._lr, alpha=self._alpha)
         elif self._dtype is 'RQL':
             self._q = {}
             self._best_action = {}
@@ -528,8 +530,8 @@ class Policy:
 
                 target = reward + self._gamma * self._best_action[curr_state]['value']
                 error = target - self._q[prev_state][last_action]
-                self._q[prev_state][last_action] += self._alpha * error
-                self._acc_loss += self._alpha * error
+                self._q[prev_state][last_action] += self._lr * error
+                self._acc_loss += self._lr * error
                 self._counts += 1
 
                 if self._q[prev_state][last_action] > self._best_action[prev_state]['value']:
@@ -566,7 +568,6 @@ class Policy:
             expected_state_action_values = (state_values * self._gamma) + reward_batch
 
             # compute huber loss
-            # todo: probably wrong direction of loss, game over is good!!!
             loss = self._loss(state_action_values, expected_state_action_values)
             self._acc_loss += loss.detach().item()
             self._counts += 1
@@ -875,7 +876,7 @@ class World:
 if __name__ == '__main__':
 
     def training(max_epochs: int, print_num: int,
-                 alpha: float, gamma: float, eps_rand: float, eps_greedy: float, eps_min: float,
+                 lr: float, gamma: float, eps_rand: float, eps_greedy: float, eps_min: float, alpha: float,
                  memory_size: int, batch_size: int, random_batch: Optional[bool],
                  smart_enemy: bool,
                  algo_type: AlgoType,
@@ -884,11 +885,12 @@ if __name__ == '__main__':
         training routine
         :param max_epochs: maximal training epochs numbers
         :param print_num: print status every PRINT_NUM epochs
-        :param alpha: learning rate (for Q-Learning only)
+        :param lr: learning rate
         :param gamma: discount factor
         :param eps_rand: percent of exploration epochs at the beginning
         :param eps_greedy: percent of exploitation epochs at the end
         :param eps_min: minimal exploration percent, 0 == greedy
+        :param alpha: smoothing constant (RMS prop)
         :param memory_size: replay memory size
         :param batch_size: random batch size
         :param random_batch: use random batch or last game transitions for optimisation
@@ -905,8 +907,9 @@ if __name__ == '__main__':
                               rolling={'method': 'mean', 'N': print_num})}
 
         # initiate policy
-        _policy = Policy(memory_size, batch_size, alpha, gamma,
-                         Epsilon(max_epochs=max_epochs, p_random=eps_rand, p_greedy=eps_greedy, explore_min=eps_min))
+        _policy = Policy(memory_size=memory_size, batch_size=batch_size, lr=lr, gamma=gamma, alpha=alpha,
+                         epsilon=Epsilon(max_epochs=max_epochs, p_random=eps_rand, p_greedy=eps_greedy,
+                                         explore_min=eps_min))
 
         # initiate world
         _world = World(_policy, algo_type.item())
@@ -960,14 +963,15 @@ if __name__ == '__main__':
     # play game after training
     play = True
 
-    # hyper parameters & run training
-    world, policy, plots = training(max_epochs=50000,
+    # hyper parameters & run training, todo: configure!!!
+    world, policy, plots = training(max_epochs=100000,
                                     print_num=2000,
-                                    alpha=0.5,
+                                    lr=0.001,
                                     gamma=0.999,
                                     eps_rand=0.1,
-                                    eps_greedy=0.1,
+                                    eps_greedy=0.5,
                                     eps_min=0.,
+                                    alpha=0.999,
                                     memory_size=512,
                                     batch_size=32,
                                     random_batch=True,
