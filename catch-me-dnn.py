@@ -16,6 +16,7 @@ from torch.nn import Module, ModuleList, Linear, BatchNorm1d
 from torch.optim import RMSprop as Optimizer
 from torch.nn import SmoothL1Loss as Loss
 from torch.nn.functional import relu
+from numpy import arange
 
 # use gpu if there is cuda device
 # from torch import cuda
@@ -419,7 +420,7 @@ class Policy:
     _dtype: str              # definition of state type, 'RQL' or 'DQN'
 
     def __init__(self, memory_size: int, batch_size: int, lr: float = 0.5, gamma: float = 0.9, alpha: float = 0.99,
-                 epsilon: Optional[Epsilon] = None):
+                 epsilon: Optional[Epsilon] = None, n_hidden: int = 3, w_hidden: int = 25):
         """
         :param memory_size: maximal memory capacity
         :param batch_size: number of samples for single optimization step, dnn only
@@ -434,6 +435,8 @@ class Policy:
         self._alpha = alpha
         self._epsilon_decay = epsilon
         self._epsilon_value = self._epsilon_decay.item() if self._epsilon_decay is not None else 0  # greedy if None
+        self._n_hidden = n_hidden
+        self._w_hidden = w_hidden
         self._loss = Loss()
         self._acc_loss = 0
         self._counts = 0
@@ -455,9 +458,11 @@ class Policy:
         if self._dtype is 'DQN':
             # initiate neural network network, computes V(s_t) expected values of actions for given state
             # noinspection PyUnresolvedReferences
-            self.policy_net = DQN(inputs=size, outputs=n_actions).to(device=dev)
+            self.policy_net = DQN(inputs=size, outputs=n_actions,
+                                  hidden_depth=self._n_hidden, hidden_dim=self._w_hidden).to(device=dev)
             # noinspection PyUnresolvedReferences
-            self.target_net = DQN(inputs=size, outputs=n_actions).to(device=dev)
+            self.target_net = DQN(inputs=size, outputs=n_actions,
+                                  hidden_depth=self._n_hidden, hidden_dim=self._w_hidden).to(device=dev)
             self.target_net.load_state_dict(self.policy_net.state_dict())
             self.target_net.eval()
             # set optimizer
@@ -877,6 +882,7 @@ if __name__ == '__main__':
 
     def training(max_epochs: int, print_num: int,
                  lr: float, gamma: float, eps_rand: float, eps_greedy: float, eps_min: float, alpha: float,
+                 n_hidden: int, w_hidden: int,
                  memory_size: int, batch_size: int, random_batch: Optional[bool],
                  smart_enemy: bool,
                  algo_type: AlgoType,
@@ -891,6 +897,8 @@ if __name__ == '__main__':
         :param eps_greedy: percent of exploitation epochs at the end
         :param eps_min: minimal exploration percent, 0 == greedy
         :param alpha: smoothing constant (RMS prop)
+        :param n_hidden: number of hidden layers
+        :param w_hidden: hidden layer dimension
         :param memory_size: replay memory size
         :param batch_size: random batch size
         :param random_batch: use random batch or last game transitions for optimisation
@@ -909,7 +917,8 @@ if __name__ == '__main__':
         # initiate policy
         _policy = Policy(memory_size=memory_size, batch_size=batch_size, lr=lr, gamma=gamma, alpha=alpha,
                          epsilon=Epsilon(max_epochs=max_epochs, p_random=eps_rand, p_greedy=eps_greedy,
-                                         explore_min=eps_min))
+                                         explore_min=eps_min),
+                         n_hidden=n_hidden, w_hidden=w_hidden)
 
         # initiate world
         _world = World(_policy, algo_type.item())
@@ -960,34 +969,50 @@ if __name__ == '__main__':
         return _world, _policy, _plot
 
 
-    # play game after training
-    play = True
+    # # play game after training
+    # play = True
 
-    # hyper parameters & run training, todo: configure!!!
-    world, policy, plots = training(max_epochs=100000,
-                                    print_num=2000,
-                                    lr=0.001,
-                                    gamma=0.999,
-                                    eps_rand=0.1,
-                                    eps_greedy=0.5,
-                                    eps_min=0.,
-                                    alpha=0.999,
-                                    memory_size=512,
-                                    batch_size=32,
-                                    random_batch=True,
-                                    smart_enemy=True,
-                                    algo_type=AlgoType('DQN'),
-                                    net_path='./mem/policy_net.pkl')
+    # Hyper params testing
+    N = 5                                   # Number Hyper param sets
+    p = list(arange(-6, 0, .01))            # list of powers
+    ls = list(arange(0, 1, .01))            # list of linear range
 
-    # plot graphs: number of steps per epoch, epsilon value per epoch, mean loss value per epoch
-    for key in plots:
-        plots[key].plot()
+    lr = [10**choice(p) for _ in range(N)]
+    alpha = [.8 + 0.2 * choice(ls) for _ in range(N)]
+    n_hidden_n = [choice(range(1, 10)) for _ in range(N)]
+    w_hidden_n = [choice(range(25, 100)) for _ in range(N)]
+    w_hidden_n.sort()
+    memory_size_n = [choice(range(4, 9)) for _ in range(N)]
+    batch_size_n = [choice(range(2, memory_size_n[n])) for n in range(N)]
 
-    # play one game
-    if play:
-        policy.set_greedy()                 # set greedy policy
-        world.reset()                       # reset players in world
-        world.draw()                        # draw t=0
-        # perform world step and print board until game is over
-        while world.play(silent=False, smart_enemy=True):
-            pass
+    m = []
+    for n in range(N):
+        print('n = %d' % n)
+        # hyper parameters & run training, todo: configure!!!
+        world, policy, plots = training(max_epochs=2048 * 8,
+                                        print_num=2048,
+                                        lr=lr[n],
+                                        gamma=0.999,
+                                        eps_rand=0.1,
+                                        eps_greedy=0.5,
+                                        eps_min=0.,
+                                        alpha=alpha[n],
+                                        n_hidden=n_hidden_n[n],
+                                        w_hidden=w_hidden_n[n],
+                                        memory_size=memory_size_n[n],
+                                        batch_size=batch_size_n[n],
+                                        random_batch=True,
+                                        smart_enemy=True,
+                                        algo_type=AlgoType('DQN'),
+                                        net_path='./mem/policy_net_%d.pkl' % n)
+        m.append(max(filter(None, plots['steps'].roll.values())))
+        print('n = %d, max steps = %.2f' % (n, m[n]))
+
+    # # play one game
+    # if play:
+    #     policy.set_greedy()  # set greedy policy
+    #     world.reset()  # reset players in world
+    #     world.draw()  # draw t=0
+    #     # perform world step and print board until game is over
+    #     while world.play(silent=False, smart_enemy=True):
+    #         pass
