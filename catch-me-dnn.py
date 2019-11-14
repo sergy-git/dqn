@@ -17,7 +17,7 @@ from torch.optim import RMSprop as Optimizer
 from torch.nn import SmoothL1Loss as Loss
 from torch.nn.functional import relu
 from numpy import arange
-from pandas import DataFrame, read_pickle
+from pandas import DataFrame
 
 # use gpu if there is cuda device
 # from torch import cuda
@@ -880,7 +880,7 @@ class World:
 
 
 if __name__ == '__main__':
-
+    # todo: clear, finalize separate dqn & q-learning
     def training(max_epochs: int, print_num: int,
                  lr: float, gamma: float, eps_rand: float, eps_greedy: float, eps_min: float, alpha: float,
                  n_hidden: int, w_hidden: int,
@@ -969,60 +969,78 @@ if __name__ == '__main__':
 
         return _world, _policy, _plot
 
+    testing = False
 
-    # # play game after training
-    # play = True
+    if testing:
+        # Hyper params testing
+        N = 100                                 # Number Hyper param sets
+        p = list(arange(-6, 0, .01))            # list of powers
+        ls = list(arange(0, 1, .01))            # list of linear range
 
-    # Hyper params testing
-    N = 100                                 # Number Hyper param sets
-    p = list(arange(-6, 0, .01))            # list of powers
-    ls = list(arange(0, 1, .01))            # list of linear range
+        lr = [10**choice(p) for _ in range(N)]
+        alpha = [.8 + 0.2 * choice(ls) for _ in range(N)]
+        n_hidden_n = [choice(range(1, 10)) for _ in range(N)]
+        w_hidden_n = [choice(range(25, 100)) for _ in range(N)]
+        w_hidden_n.sort()
+        memory_size_n = [choice(range(4, 9)) for _ in range(N)]
+        batch_size_n = [choice(range(2, memory_size_n[n])) for n in range(N)]
 
-    lr = [10**choice(p) for _ in range(N)]
-    alpha = [.8 + 0.2 * choice(ls) for _ in range(N)]
-    n_hidden_n = [choice(range(1, 10)) for _ in range(N)]
-    w_hidden_n = [choice(range(25, 100)) for _ in range(N)]
-    w_hidden_n.sort()
-    memory_size_n = [choice(range(4, 9)) for _ in range(N)]
-    batch_size_n = [choice(range(2, memory_size_n[n])) for n in range(N)]
+        m = []
+        for n in range(N):
+            print('n = %d' % n)
+            # hyper parameters & run training, todo: configure!!!
+            world, policy, plots = training(max_epochs=50000,
+                                            print_num=2000,
+                                            lr=lr[n],
+                                            gamma=0.999,
+                                            eps_rand=0.1,
+                                            eps_greedy=0.5,
+                                            eps_min=0.,
+                                            alpha=alpha[n],
+                                            n_hidden=n_hidden_n[n],
+                                            w_hidden=w_hidden_n[n],
+                                            memory_size=memory_size_n[n],
+                                            batch_size=batch_size_n[n],
+                                            random_batch=True,
+                                            smart_enemy=True,
+                                            algo_type=AlgoType('DQN'),
+                                            net_path='./mem/policy_net_%d.pkl' % n)
+            m.append(max(filter(None, plots['steps'].roll.values())))
+            print('n = %d, max steps = %.2f' % (n, m[n]))
 
-    m = []
-    for n in range(N):
-        print('n = %d' % n)
-        # hyper parameters & run training, todo: configure!!!
-        world, policy, plots = training(max_epochs=50000,
+        df = DataFrame(data={'lr': lr,
+                             'alpha': alpha,
+                             'n_hidden_n': n_hidden_n,
+                             'w_hidden_n': w_hidden_n,
+                             'memory_size_n': memory_size_n,
+                             'batch_size_n': batch_size_n,
+                             'm': m}, index=[n for n in range(N)])
+        df.to_pickle('./result_tmp.pkl')
+    else:
+        world, policy, plots = training(max_epochs=1500000,
                                         print_num=2000,
-                                        lr=lr[n],
+                                        lr=0.000138,
                                         gamma=0.999,
                                         eps_rand=0.1,
-                                        eps_greedy=0.5,
+                                        eps_greedy=0.7,
                                         eps_min=0.,
-                                        alpha=alpha[n],
-                                        n_hidden=n_hidden_n[n],
-                                        w_hidden=w_hidden_n[n],
-                                        memory_size=memory_size_n[n],
-                                        batch_size=batch_size_n[n],
+                                        alpha=0.974,
+                                        n_hidden=3,
+                                        w_hidden=95,
+                                        memory_size=64,
+                                        batch_size=64,
                                         random_batch=True,
                                         smart_enemy=True,
                                         algo_type=AlgoType('DQN'),
-                                        net_path='./mem/policy_net_%d.pkl' % n)
-        m.append(max(filter(None, plots['steps'].roll.values())))
-        print('n = %d, max steps = %.2f' % (n, m[n]))
+                                        net_path='./mem/policy_net_%d.pkl' % 2094)
 
-    # # play one game
-    # if play:
-    #     policy.set_greedy()  # set greedy policy
-    #     world.reset()  # reset players in world
-    #     world.draw()  # draw t=0
-    #     # perform world step and print board until game is over
-    #     while world.play(silent=False, smart_enemy=True):
-    #         pass
+        for key in plots:
+            plots[key].plot()
 
-    df = DataFrame(data={'lr': lr,
-                         'alpha': alpha,
-                         'n_hidden_n': n_hidden_n,
-                         'w_hidden_n': w_hidden_n,
-                         'memory_size_n': memory_size_n,
-                         'batch_size_n': batch_size_n,
-                         'm': m}, index=[n for n in range(N)])
-    df.to_pickle('./result_tmp.pkl')
+        # play one game
+        policy.set_greedy()  # set greedy policy
+        world.reset()  # reset players in world
+        world.draw()  # draw t=0
+        # perform world step and print board until game is over
+        while world.play(silent=False, smart_enemy=True):
+            pass
