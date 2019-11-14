@@ -17,6 +17,7 @@ from torch.optim import RMSprop as Optimizer
 from torch.nn import SmoothL1Loss as Loss
 from torch.nn.functional import relu
 from numpy import arange
+from pandas import DataFrame, read_pickle
 
 # use gpu if there is cuda device
 # from torch import cuda
@@ -973,7 +974,7 @@ if __name__ == '__main__':
     # play = True
 
     # Hyper params testing
-    N = 5                                   # Number Hyper param sets
+    N = 100                                 # Number Hyper param sets
     p = list(arange(-6, 0, .01))            # list of powers
     ls = list(arange(0, 1, .01))            # list of linear range
 
@@ -989,8 +990,8 @@ if __name__ == '__main__':
     for n in range(N):
         print('n = %d' % n)
         # hyper parameters & run training, todo: configure!!!
-        world, policy, plots = training(max_epochs=2048 * 8,
-                                        print_num=2048,
+        world, policy, plots = training(max_epochs=50000,
+                                        print_num=2000,
                                         lr=lr[n],
                                         gamma=0.999,
                                         eps_rand=0.1,
@@ -1016,3 +1017,12 @@ if __name__ == '__main__':
     #     # perform world step and print board until game is over
     #     while world.play(silent=False, smart_enemy=True):
     #         pass
+
+    df = DataFrame(data={'lr': lr,
+                         'alpha': alpha,
+                         'n_hidden_n': n_hidden_n,
+                         'w_hidden_n': w_hidden_n,
+                         'memory_size_n': memory_size_n,
+                         'batch_size_n': batch_size_n,
+                         'm': m}, index=[n for n in range(N)])
+    df.to_pickle('./result_tmp.pkl')
